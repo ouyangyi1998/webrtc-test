@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-50 min-h-screen">
+<div class="max-w-6xl mx-auto py-8 px-4 space-y-6">
+    <header class="flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-semibold">WebRTC 远程演示</h1>
+            <p class="text-sm text-slate-300">房间匹配 / 聊天 / 鼠标控制</p>
+        </div>
+        <a class="text-sm text-cyan-300 underline" href="https://webrtc.org/" target="_blank" rel="noreferrer">关于 WebRTC</a>
+    </header>
+
+    <section class="grid md:grid-cols-3 gap-4">
+        <div class="md:col-span-2 bg-slate-800 rounded-lg p-4 space-y-4">
+            <div class="grid md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm text-slate-300 mb-1">房间号</label>
+                    <input id="roomId" class="w-full rounded bg-slate-700 px-3 py-2" placeholder="如: demo-room-1" value="demo-room">
+                </div>
+                <div>
+                    <label class="block text-sm text-slate-300 mb-1">昵称</label>
+                    <input id="displayName" class="w-full rounded bg-slate-700 px-3 py-2" placeholder="Your name" value="user-1">
+                </div>
+            </div>
+            <div class="flex flex-wrap gap-3 items-center">
+                <button id="joinBtn" class="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-500">加入房间</button>
+                <button id="leaveBtn" class="px-4 py-2 rounded bg-rose-600 hover:bg-rose-500" disabled>离开</button>
+                <label class="inline-flex items-center gap-2 text-sm">
+                    <input id="roleControlled" type="radio" name="role" class="rounded border-slate-600" checked> 被控端(共享屏幕)
+                </label>
+                <label class="inline-flex items-center gap-2 text-sm">
+                    <input id="roleController" type="radio" name="role" class="rounded border-slate-600"> 控制端(仅远程控制)
+                </label>
+                <label class="inline-flex items-center gap-2 text-sm">
+                    <input id="enableMouse" type="checkbox" class="rounded border-slate-600" checked> 启用远程鼠标
+                </label>
+            </div>
+            <div class="space-y-2">
+                <p class="text-sm text-slate-300">远端流</p>
+                <div class="relative">
+                    <video id="remoteVideo" class="w-full bg-black rounded" autoplay playsinline></video>
+                    <div id="remoteOverlay" class="absolute inset-0 pointer-events-none border border-cyan-400/60 rounded"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-slate-800 rounded-lg p-4 flex flex-col h-full">
+            <div class="flex justify-between items-center mb-2">
+                <h2 class="text-lg font-semibold">聊天</h2>
+                <span id="connState" class="text-xs text-slate-300">未连接</span>
+            </div>
+            <div id="chatArea" class="flex-1 bg-slate-900 rounded p-3 overflow-y-auto text-sm space-y-2"></div>
+            <div class="mt-3 flex gap-2">
+                <input id="chatInput" class="flex-1 rounded bg-slate-700 px-3 py-2 text-sm" placeholder="输入消息">
+                <button id="sendChat" class="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-sm">发送</button>
+            </div>
+        </div>
+    </section>
+
+    <section class="bg-slate-800 rounded-lg p-4">
+        <h3 class="font-semibold mb-2">日志</h3>
+        <pre id="logArea" class="bg-slate-900 rounded p-3 text-xs h-40 overflow-y-auto"></pre>
+    </section>
+</div>
+
+<script th:inline="javascript">
+    const SIGNAL_CONFIG = {
+        stunServers: /*[[${stunServers}]]*/ [],
+        turnServers: /*[[${turnServers}]]*/ [],
+        turnUsername: /*[[${turnUsername}]]*/ "",
+        turnPassword: /*[[${turnPassword}]]*/ ""
+    };
+</script>
+<script src="/js/room.js"></script>
+</body>
+</html>

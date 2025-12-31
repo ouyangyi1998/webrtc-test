@@ -1,0 +1,21 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: webrtc-demo
+  thymeleaf:
+    cache: false
+
+app:
+  stun:
+    urls: stun:43.139.50.108:3478
+  turn:
+    urls: turn:43.139.50.108:3478?transport=udp,turn:43.139.50.108:3478?transport=tcp
+    username: admin
+    password: 123456
+
+logging:
+  level:
+    root: INFO
+    com.example.webrtc: DEBUG
