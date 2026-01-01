@@ -4,8 +4,6 @@
   const joinBtn = document.getElementById("joinBtn");
   const leaveBtn = document.getElementById("leaveBtn");
   const enableMouseChk = document.getElementById("enableMouse");
-  const roleControlled = document.getElementById("roleControlled");
-  const roleController = document.getElementById("roleController");
   const remoteVideo = document.getElementById("remoteVideo");
   const remoteOverlay = document.getElementById("remoteOverlay");
   const chatArea = document.getElementById("chatArea");
@@ -13,6 +11,14 @@
   const sendChatBtn = document.getElementById("sendChat");
   const logArea = document.getElementById("logArea");
   const connState = document.getElementById("connState");
+  
+  // 视频流控制元素
+  const frameRateSelect = document.getElementById("frameRateSelect");
+  const bitrateSelect = document.getElementById("bitrateSelect");
+  const currentFps = document.getElementById("currentFps");
+  const currentBitrate = document.getElementById("currentBitrate");
+  const currentPacketLoss = document.getElementById("currentPacketLoss");
+  const currentLatency = document.getElementById("currentLatency");
 
   let ws;
   let pc;
@@ -25,6 +31,178 @@
   let reconnectTimer;
   let connecting = false;
   let manualLeave = false;
+  
+  // 视频流控制相关
+  let statsMonitor = null;
+  let bitrateAdjuster = null;
+  let streamConfig = {
+    frameRate: 15,
+    bitrateMode: 'auto',
+    targetBitrate: 2000000
+  };
+
+  // ===== 自动码率调整引擎 =====
+  class BitrateAdjuster {
+    constructor() {
+      this.enabled = false;
+      this.currentBitrate = 2000000;  // 当前码率
+      this.minBitrate = 300000;       // 最低300kbps
+      this.maxBitrate = 4000000;      // 最高4Mbps
+      this.adjustCooldown = 5000;     // 5秒冷却
+      this.lastAdjustTime = 0;
+      this.consecutiveBadSamples = 0;
+      this.consecutiveGoodSamples = 0;
+    }
+    
+    setMode(mode) {
+      this.enabled = (mode === 'auto');
+      if (!this.enabled) {
+        // 手动模式下直接设置目标码率
+        const bitrateMap = {
+          'smooth': 500000,
+          'hd': 2000000,
+          'original': 4000000
+        };
+        this.currentBitrate = bitrateMap[mode] || 2000000;
+      }
+    }
+    
+    analyze(metrics) {
+      if (!this.enabled) return null;
+      
+      const now = Date.now();
+      if (now - this.lastAdjustTime < this.adjustCooldown) return null;
+      
+      // 综合判断网络状况
+      const isBad = (metrics.packetLoss > 0.05) || (metrics.rtt && metrics.rtt > 100);
+      const isGood = (metrics.packetLoss < 0.02) && (metrics.rtt && metrics.rtt < 50);
+      
+      if (isBad) {
+        this.consecutiveBadSamples++;
+        this.consecutiveGoodSamples = 0;
+        
+        // 连续3次不佳则降低码率
+        if (this.consecutiveBadSamples >= 3) {
+          const newBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
+          if (newBitrate !== this.currentBitrate) {
+            this.currentBitrate = newBitrate;
+            this.lastAdjustTime = now;
+            this.consecutiveBadSamples = 0;
+            return newBitrate;
+          }
+        }
+      } else if (isGood) {
+        this.consecutiveGoodSamples++;
+        this.consecutiveBadSamples = 0;
+        
+        // 连续5次良好则提高码率
+        if (this.consecutiveGoodSamples >= 5) {
+          const newBitrate = Math.min(this.maxBitrate, this.currentBitrate * 1.3);
+          if (newBitrate !== this.currentBitrate) {
+            this.currentBitrate = newBitrate;
+            this.lastAdjustTime = now;
+            this.consecutiveGoodSamples = 0;
+            return newBitrate;
+          }
+        }
+      }
+      
+      return null;
+    }
+  }
+
+  // ===== 网络统计监控器 =====
+  class NetworkStatsMonitor {
+    constructor(peerConnection) {
+      this.pc = peerConnection;
+      this.statsInterval = null;
+      this.onStatsUpdate = null;
+      this.lastStats = null;
+    }
+
+    start() {
+      if (this.statsInterval) return;
+      this.statsInterval = setInterval(async () => {
+        try {
+          const stats = await this.pc.getStats();
+          const metrics = this.parseStats(stats);
+          if (this.onStatsUpdate && metrics) {
+            this.onStatsUpdate(metrics);
+          }
+        } catch (e) {
+          console.error("获取统计失败:", e);
+        }
+      }, 2000); // 每2秒采样
+    }
+
+    stop() {
+      if (this.statsInterval) {
+        clearInterval(this.statsInterval);
+        this.statsInterval = null;
+      }
+    }
+
+    parseStats(stats) {
+      let inboundRtp = null;
+      let candidatePair = null;
+
+      stats.forEach(report => {
+        if (report.type === 'inbound-rtp' && report.kind === 'video') {
+          inboundRtp = report;
+        }
+        // 查找当前选中的候选对（selected）或状态为succeeded的候选对
+        if (report.type === 'candidate-pair') {
+          if (report.selected || report.state === 'succeeded') {
+            candidatePair = report;
+          }
+        }
+      });
+
+      if (!inboundRtp) return null;
+
+      const metrics = {
+        timestamp: inboundRtp.timestamp,
+        packetsReceived: inboundRtp.packetsReceived || 0,
+        packetsLost: inboundRtp.packetsLost || 0,
+        jitter: inboundRtp.jitter || 0,
+        bytesReceived: inboundRtp.bytesReceived || 0,
+        framesDecoded: inboundRtp.framesDecoded || 0,
+        frameWidth: inboundRtp.frameWidth || 0,
+        frameHeight: inboundRtp.frameHeight || 0
+      };
+
+      // 计算丢包率
+      const totalPackets = metrics.packetsReceived + metrics.packetsLost;
+      metrics.packetLoss = totalPackets > 0 ? metrics.packetsLost / totalPackets : 0;
+
+      // 计算码率和帧率
+      if (this.lastStats) {
+        const timeDiff = (metrics.timestamp - this.lastStats.timestamp) / 1000; // 秒
+        if (timeDiff > 0) {
+          const bytesDiff = metrics.bytesReceived - this.lastStats.bytesReceived;
+          metrics.bitrate = (bytesDiff * 8) / timeDiff; // bps
+
+          const framesDiff = metrics.framesDecoded - this.lastStats.framesDecoded;
+          metrics.fps = framesDiff / timeDiff;
+        }
+      }
+
+      // RTT (延迟) - 从候选对或inbound-rtp获取
+      if (candidatePair) {
+        if (candidatePair.currentRoundTripTime !== undefined) {
+          metrics.rtt = candidatePair.currentRoundTripTime * 1000; // 转换为ms
+        }
+      }
+      
+      // 如果候选对中没有RTT，尝试从inbound-rtp中获取
+      if (!metrics.rtt && inboundRtp.roundTripTime !== undefined) {
+        metrics.rtt = inboundRtp.roundTripTime * 1000;
+      }
+
+      this.lastStats = metrics;
+      return metrics;
+    }
+  }
 
   const ensureDefaultValues = () => {
     if (!roomInput.value.trim()) {
@@ -48,6 +226,60 @@
     console.log(msg);
   };
 
+  // ===== 流控制相关函数 =====
+  const applyStreamConfig = async () => {
+    if (!pc || !isJoined) return;
+    
+    streamConfig.frameRate = parseInt(frameRateSelect.value);
+    streamConfig.bitrateMode = bitrateSelect.value;
+    
+    // 根据档位设置目标码率
+    const bitrateMap = {
+      'smooth': 500000,    // 500kbps
+      'hd': 2000000,       // 2Mbps
+      'original': 4000000, // 4Mbps
+      'auto': 2000000      // 默认2Mbps，后续由自动调整
+    };
+    streamConfig.targetBitrate = bitrateMap[streamConfig.bitrateMode] || 2000000;
+    
+    log(`应用流配置: ${streamConfig.frameRate}fps, ${streamConfig.bitrateMode}, ${(streamConfig.targetBitrate/1000).toFixed(0)}kbps`);
+    
+    // 通过信令发送配置到Agent
+    sendSignal('stream_config', streamConfig);
+  };
+
+  const updateStatsDisplay = (metrics) => {
+    if (metrics.fps !== undefined) {
+      currentFps.textContent = metrics.fps.toFixed(1) + ' FPS';
+    }
+    if (metrics.bitrate !== undefined) {
+      currentBitrate.textContent = (metrics.bitrate / 1000).toFixed(0) + ' kbps';
+    }
+    if (metrics.packetLoss !== undefined) {
+      const lossPercent = (metrics.packetLoss * 100).toFixed(2);
+      currentPacketLoss.textContent = lossPercent + '%';
+      // 根据丢包率改变颜色
+      if (metrics.packetLoss > 0.05) {
+        currentPacketLoss.style.color = '#ef4444'; // 红色
+      } else if (metrics.packetLoss > 0.02) {
+        currentPacketLoss.style.color = '#f59e0b'; // 橙色
+      } else {
+        currentPacketLoss.style.color = '#22d3ee'; // 青色
+      }
+    }
+    if (metrics.rtt !== undefined) {
+      currentLatency.textContent = metrics.rtt.toFixed(0) + ' ms';
+      // 根据延迟改变颜色
+      if (metrics.rtt > 100) {
+        currentLatency.style.color = '#ef4444'; // 红色
+      } else if (metrics.rtt > 50) {
+        currentLatency.style.color = '#f59e0b'; // 橙色
+      } else {
+        currentLatency.style.color = '#22d3ee'; // 青色
+      }
+    }
+  };
+
   const addChat = (sender, text) => {
     const el = document.createElement("div");
     el.innerHTML = `<span class="text-cyan-300">${sender}:</span> <span class="text-slate-200 break-words">${text}</span>`;
@@ -55,7 +287,7 @@
     chatArea.scrollTop = chatArea.scrollHeight;
   };
 
-  const isController = () => true; // Web 端仅作为控制端
+  const isController = () => true; // Web 端固定为控制端
   const applyDisplayStyles = () => {
     if (remoteVideo) {
       remoteVideo.style.objectFit = "contain";
@@ -145,6 +377,40 @@
       }
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
         logSelectedCandidate();
+        
+        // 启动网络统计监控
+        if (!statsMonitor) {
+          statsMonitor = new NetworkStatsMonitor(pc);
+          bitrateAdjuster = new BitrateAdjuster();
+          bitrateAdjuster.setMode(bitrateSelect.value);
+          
+          statsMonitor.onStatsUpdate = (metrics) => {
+            updateStatsDisplay(metrics);
+            
+            // 自动码率调整
+            if (bitrateAdjuster && bitrateAdjuster.enabled) {
+              const newBitrate = bitrateAdjuster.analyze(metrics);
+              if (newBitrate !== null) {
+                streamConfig.targetBitrate = newBitrate;
+                log(`自动调整码率: ${(newBitrate/1000).toFixed(0)}kbps`);
+                sendSignal('stream_config', streamConfig);
+              }
+            }
+          };
+          statsMonitor.start();
+          log("网络统计监控已启动");
+        }
+        
+        // 应用初始流配置
+        applyStreamConfig();
+      }
+      
+      // 连接断开时停止监控
+      if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
+        if (statsMonitor) {
+          statsMonitor.stop();
+          statsMonitor = null;
+        }
       }
     };
     pc.ontrack = (e) => {
@@ -169,10 +435,32 @@
     return pc;
   };
 
+  // 聊天功能启用/禁用
+  const enableChat = (enabled) => {
+    chatInput.disabled = !enabled;
+    sendChatBtn.disabled = !enabled;
+    if (enabled) {
+      chatInput.placeholder = "输入消息...";
+      chatInput.style.opacity = "1";
+    } else {
+      chatInput.placeholder = "DataChannel未连接";
+      chatInput.style.opacity = "0.5";
+    }
+  };
+  
+  // 初始禁用聊天
+  enableChat(false);
+
   const attachDataChannel = () => {
     if (!dataChannel) return;
-    dataChannel.onopen = () => log("DataChannel opened");
-    dataChannel.onclose = () => log("DataChannel closed");
+    dataChannel.onopen = () => {
+      log("DataChannel opened");
+      enableChat(true);
+    };
+    dataChannel.onclose = () => {
+      log("DataChannel closed");
+      enableChat(false);
+    };
     dataChannel.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data);
@@ -294,8 +582,9 @@
           await startMediaAndOffer();
           break;
         case "peer-left":
-          log("对端已离开，清理连接等待重新加入");
-          teardownRtc(true);
+          log("对端已离开，清理RTC连接，保持信令连接等待重新加入...");
+          teardownRtc(true);  // 清理RTC但保留localStream
+          // 保持WebSocket连接，当对端重新加入时会收到peer-joined消息
           break;
         case "offer":
           log("收到 offer");
@@ -610,9 +899,43 @@
       sendMouse("move", x, y);
     });
     
-    // 鼠标点击事件
-    remoteVideo.addEventListener("click", (ev) => {
-      log("视频元素收到点击事件");
+    // 鼠标点击事件（支持左键、中键、右键）
+    remoteVideo.addEventListener("mousedown", (ev) => {
+      // 只处理mousedown，不用click，以支持不同按钮
+      const ratio = toRatio(ev);
+      if (!ratio) { log("无法计算坐标比例"); return; }
+      const { x, y } = ratio;
+      if (x < 0 || x > 1 || y < 0 || y > 1) { log("坐标超出范围"); return; }
+      
+      if (!isController()) { log("不是控制端"); return; }
+      if (!enableMouseChk.checked) { log("远程鼠标未启用"); return; }
+      if (!dataChannel) { log("DataChannel 不存在"); return; }
+      if (dataChannel.readyState !== "open") { log("DataChannel 未打开: " + dataChannel.readyState); return; }
+      
+      log(`视频元素收到鼠标按下事件: button=${ev.button}`);
+      ev.preventDefault();
+      ev.stopPropagation();
+      sendMouse("mousedown", x, y, { button: ev.button });
+    });
+    
+    remoteVideo.addEventListener("mouseup", (ev) => {
+      const ratio = toRatio(ev);
+      if (!ratio) return;
+      const { x, y } = ratio;
+      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      
+      if (!isController()) return;
+      if (!enableMouseChk.checked) return;
+      if (!dataChannel || dataChannel.readyState !== "open") return;
+      
+      ev.preventDefault();
+      ev.stopPropagation();
+      sendMouse("mouseup", x, y, { button: ev.button });
+    });
+    
+    // 双击事件
+    remoteVideo.addEventListener("dblclick", (ev) => {
+      log("视频元素收到双击事件");
       const ratio = toRatio(ev);
       if (!ratio) { log("无法计算坐标比例"); return; }
       const { x, y } = ratio;
@@ -625,7 +948,15 @@
       
       ev.preventDefault();
       ev.stopPropagation();
-      sendMouse("click", x, y);
+      sendMouse("dblclick", x, y, { button: ev.button });
+    });
+    
+    // 右键菜单（阻止默认菜单，发送右键点击）
+    remoteVideo.addEventListener("contextmenu", (ev) => {
+      log("视频元素收到右键菜单事件");
+      ev.preventDefault();
+      ev.stopPropagation();
+      // 右键点击已经通过mousedown/mouseup处理，这里只需阻止默认菜单
     });
     
     // 滚轮事件
@@ -664,6 +995,7 @@
     }
     remoteStream = null;
     remoteVideo.srcObject = null;
+    enableChat(false);
   };
 
   const scheduleReconnect = () => {
@@ -707,6 +1039,20 @@
     sendSignal("leave", {});
     cleanup(true);
   });
+  
+  // 视频流控制事件监听
+  frameRateSelect.addEventListener("change", () => {
+    if (isJoined) applyStreamConfig();
+  });
+  bitrateSelect.addEventListener("change", () => {
+    if (isJoined) {
+      if (bitrateAdjuster) {
+        bitrateAdjuster.setMode(bitrateSelect.value);
+      }
+      applyStreamConfig();
+    }
+  });
+  
   document.addEventListener("keydown", (e) => {
     // 过滤纯修饰键重复
     if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") {
@@ -722,26 +1068,8 @@
     if (e.key === "Enter") sendChat();
   });
 
-  const applyRolePointerMode = () => {
-    const ctrl = isController();
-    if (ctrl) {
-      if (remoteVideo) remoteVideo.classList.remove("pass-through");
-      if (remoteOverlay) remoteOverlay.classList.remove("pass-through");
-    } else {
-      if (remoteVideo) remoteVideo.classList.add("pass-through");
-      if (remoteOverlay) remoteOverlay.classList.add("pass-through");
-    }
-  };
-
   applyDisplayStyles();
   window.addEventListener("resize", () => applyDisplayStyles());
   bindMouseEvents();
-
-  const onRoleChange = () => {
-    log(`角色切换为: ${isController() ? "控制端" : "被控端"}`);
-    applyRolePointerMode();
-  };
-  if (roleController) roleController.addEventListener("change", onRoleChange);
-  if (roleControlled) roleControlled.addEventListener("change", onRoleChange);
-  onRoleChange();
+  
 })(); 

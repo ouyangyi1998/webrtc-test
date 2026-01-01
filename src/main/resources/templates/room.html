@@ -39,14 +39,54 @@
                 <button id="joinBtn" class="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-500">加入房间</button>
                 <button id="leaveBtn" class="px-4 py-2 rounded bg-rose-600 hover:bg-rose-500" disabled>离开</button>
                 <label class="inline-flex items-center gap-2 text-sm">
-                    <input id="roleControlled" type="radio" name="role" class="rounded border-slate-600" disabled> 被控端(共享屏幕)
-                </label>
-                <label class="inline-flex items-center gap-2 text-sm">
-                    <input id="roleController" type="radio" name="role" class="rounded border-slate-600" checked> 控制端(仅远程控制)
-                </label>
-                <label class="inline-flex items-center gap-2 text-sm">
                     <input id="enableMouse" type="checkbox" class="rounded border-slate-600" checked> 启用远程鼠标
                 </label>
+            </div>
+            
+            <!-- 视频流控制面板 -->
+            <div class="bg-slate-700/50 rounded-lg p-3 space-y-3">
+                <h3 class="text-sm font-semibold text-slate-200">视频流控制</h3>
+                <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                        <label class="block text-xs text-slate-300 mb-1">帧率</label>
+                        <select id="frameRateSelect" class="w-full rounded bg-slate-600 px-2 py-1.5 text-sm">
+                            <option value="5">5 FPS</option>
+                            <option value="10">10 FPS</option>
+                            <option value="15" selected>15 FPS</option>
+                            <option value="20">20 FPS</option>
+                            <option value="30">30 FPS</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-300 mb-1">画质</label>
+                        <select id="bitrateSelect" class="w-full rounded bg-slate-600 px-2 py-1.5 text-sm">
+                            <option value="auto" selected>自动</option>
+                            <option value="smooth">流畅 (500kbps)</option>
+                            <option value="hd">高清 (2Mbps)</option>
+                            <option value="original">原画 (4Mbps)</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <!-- 实时状态显示 -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                    <div class="bg-slate-800/50 rounded px-2 py-1">
+                        <div class="text-slate-400">当前帧率</div>
+                        <div id="currentFps" class="text-cyan-400 font-mono">-- FPS</div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded px-2 py-1">
+                        <div class="text-slate-400">码率</div>
+                        <div id="currentBitrate" class="text-cyan-400 font-mono">-- kbps</div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded px-2 py-1">
+                        <div class="text-slate-400">丢包率</div>
+                        <div id="currentPacketLoss" class="text-cyan-400 font-mono">--%</div>
+                    </div>
+                    <div class="bg-slate-800/50 rounded px-2 py-1">
+                        <div class="text-slate-400">延迟</div>
+                        <div id="currentLatency" class="text-cyan-400 font-mono">-- ms</div>
+                    </div>
+                </div>
             </div>
             <div class="space-y-2">
                 <p class="text-sm text-slate-300">远端流</p>

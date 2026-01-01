@@ -7,34 +7,50 @@ import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.handshake.ServerHandshake;
 
 import java.net.URI;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-class AgentClient extends WebSocketClient {
+public class AgentClient extends WebSocketClient {
     private final ObjectMapper mapper = new ObjectMapper();
     private final String roomId;
     private final String name;
     private final ControlHandler controlHandler;
     private final StatusListener listener;
     private WebRTCManager webRTCManager;
+    
+    // 重连相关
+    private volatile boolean shouldReconnect = true;
+    private int reconnectAttempts = 0;
+    private static final int MAX_RECONNECT_DELAY = 10000; // 最大10秒
+    private ScheduledExecutorService reconnectExecutor;
 
-    interface StatusListener {
+    public interface StatusListener {
         void onStatus(String s);
     }
 
-    AgentClient(URI serverUri, String roomId, String name, ControlHandler controlHandler, StatusListener listener) {
+    public AgentClient(URI serverUri, String roomId, String name, ControlHandler controlHandler, StatusListener listener) {
         super(serverUri);
         this.roomId = roomId;
         this.name = name;
         this.controlHandler = controlHandler;
         this.listener = listener;
+        this.reconnectExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "WS-Reconnect-Thread");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
-    void setWebRTCManager(WebRTCManager manager) {
+    public void setWebRTCManager(WebRTCManager manager) {
         this.webRTCManager = manager;
     }
 
     @Override
     public void onOpen(ServerHandshake handshakedata) {
-        listener.onStatus("WS connected");
+        // 重连成功，重置计数
+        reconnectAttempts = 0;
+        listener.onStatus("WebSocket 已连接");
         try {
             send(mapper.writeValueAsString(
                     mapper.createObjectNode()
@@ -64,9 +80,10 @@ class AgentClient extends WebSocketClient {
                 listener.onStatus("检测到控制端加入，等待连接...");
                 // 被控端不主动创建 offer，等待控制端发起
             } else if ("peer-left".equalsIgnoreCase(type)) {
-                listener.onStatus("控制端已离开");
+                listener.onStatus("控制端已离开，等待新的控制端连接...");
                 if (webRTCManager != null) {
-                    webRTCManager.cleanup();
+                    // 只清理RTC连接，保持WebSocket连接
+                    webRTCManager.cleanupRtcOnly();
                 }
             // WebRTC 信令消息
             } else if ("offer".equalsIgnoreCase(type)) {
@@ -94,6 +111,12 @@ class AgentClient extends WebSocketClient {
                 } else if ("chat".equals(kind)) {
                     listener.onStatus("Chat: " + data.path("text").asText(""));
                 }
+            } else if ("stream_config".equalsIgnoreCase(type)) {
+                // 处理视频流配置
+                if (webRTCManager != null) {
+                    JsonNode data = root.path("data");
+                    webRTCManager.handleStreamConfig(data);
+                }
             }
         } catch (Exception e) {
             listener.onStatus("Parse error: " + e.getMessage());
@@ -102,10 +125,46 @@ class AgentClient extends WebSocketClient {
 
     @Override
     public void onClose(int code, String reason, boolean remote) {
-        listener.onStatus("WS closed: " + reason);
+        listener.onStatus("WebSocket 已断开: " + reason);
         if (webRTCManager != null) {
             webRTCManager.cleanup();
         }
+        
+        // 自动重连（非手动断开且是远端断开时）
+        if (shouldReconnect && remote) {
+            scheduleReconnect();
+        }
+    }
+    
+    /**
+     * 调度自动重连（指数退避策略）
+     */
+    private void scheduleReconnect() {
+        if (reconnectExecutor == null || reconnectExecutor.isShutdown()) {
+            listener.onStatus("重连执行器已关闭，无法重连");
+            return;
+        }
+        
+        int delay = Math.min(1000 * (int) Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
+        reconnectAttempts++;
+        listener.onStatus("将在 " + delay + "ms 后尝试重连... (第" + reconnectAttempts + "次)");
+        
+        reconnectExecutor.schedule(() -> {
+            if (!shouldReconnect) {
+                listener.onStatus("重连已取消");
+                return;
+            }
+            try {
+                listener.onStatus("正在重连...");
+                reconnect();
+            } catch (Exception e) {
+                listener.onStatus("重连失败: " + e.getMessage());
+                // 继续尝试重连
+                if (shouldReconnect) {
+                    scheduleReconnect();
+                }
+            }
+        }, delay, TimeUnit.MILLISECONDS);
     }
 
     @Override
@@ -114,7 +173,7 @@ class AgentClient extends WebSocketClient {
     }
 
     // 发送 WebRTC 信令消息
-    void sendSignal(String type, JsonNode data) {
+    public void sendSignal(String type, JsonNode data) {
         try {
             ObjectNode message = mapper.createObjectNode();
             message.put("type", type);
@@ -124,6 +183,37 @@ class AgentClient extends WebSocketClient {
             send(mapper.writeValueAsString(message));
         } catch (Exception e) {
             listener.onStatus("发送信令失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 手动停止连接并禁用自动重连
+     */
+    public void stopAndDisconnect() {
+        listener.onStatus("手动断开连接...");
+        shouldReconnect = false;
+        if (reconnectExecutor != null && !reconnectExecutor.isShutdown()) {
+            reconnectExecutor.shutdownNow();
+        }
+        try {
+            close();
+        } catch (Exception e) {
+            listener.onStatus("关闭连接异常: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 启用自动重连
+     */
+    public void enableReconnect() {
+        shouldReconnect = true;
+        reconnectAttempts = 0;
+        if (reconnectExecutor == null || reconnectExecutor.isShutdown()) {
+            reconnectExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "WS-Reconnect-Thread");
+                t.setDaemon(true);
+                return t;
+            });
         }
     }
 }
