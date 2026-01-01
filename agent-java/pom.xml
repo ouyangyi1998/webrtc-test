@@ -8,11 +8,12 @@
     <description>Java desktop agent for WebRTC control</description>
 
     <properties>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
         <webrtc.java.version>0.14.0</webrtc.java.version>
         <webrtc.java.classifier>macos-x86_64</webrtc.java.classifier>
         <javafx.version>17.0.9</javafx.version>
+        <javafx.classifier>mac</javafx.classifier>
     </properties>
 
     <dependencies>
@@ -44,7 +45,7 @@
             <version>${webrtc.java.version}</version>
             <classifier>${webrtc.java.classifier}</classifier>
         </dependency>
-        <!-- JavaFX dependencies -->
+        <!-- JavaFX dependencies: 需要无 classifier(类文件) + 有 classifier(原生库) -->
         <dependency>
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-controls</artifactId>
@@ -52,8 +53,42 @@
         </dependency>
         <dependency>
             <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>${javafx.version}</version>
+            <classifier>${javafx.classifier}</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
             <artifactId>javafx-fxml</artifactId>
             <version>${javafx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-fxml</artifactId>
+            <version>${javafx.version}</version>
+            <classifier>${javafx.classifier}</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-graphics</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-graphics</artifactId>
+            <version>${javafx.version}</version>
+            <classifier>${javafx.classifier}</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-base</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-base</artifactId>
+            <version>${javafx.version}</version>
+            <classifier>${javafx.classifier}</classifier>
         </dependency>
     </dependencies>
 
@@ -61,25 +96,64 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-assembly-plugin</artifactId>
-                <version>3.6.0</version>
-                <configuration>
-                    <descriptorRefs>
-                        <descriptorRef>jar-with-dependencies</descriptorRef>
-                    </descriptorRefs>
-                    <archive>
-                        <manifest>
-                            <mainClass>com.example.agent.javafx.AgentAppFX</mainClass>
-                        </manifest>
-                    </archive>
-                </configuration>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
                 <executions>
                     <execution>
-                        <id>make-assembly</id>
                         <phase>package</phase>
                         <goals>
-                            <goal>single</goal>
+                            <goal>shade</goal>
                         </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.example.agent.Launcher</mainClass>
+                                </transformer>
+                            </transformers>
+                            <filters>
+                                <!-- 排除无 classifier JavaFX 的原生库，只保留 Java 类 -->
+                                <filter>
+                                    <artifact>org.openjfx:javafx-graphics:jar:17.0.9</artifact>
+                                    <excludes>
+                                        <exclude>*.dylib</exclude>
+                                        <exclude>*.so</exclude>
+                                        <exclude>*.dll</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.openjfx:javafx-controls:jar:17.0.9</artifact>
+                                    <excludes>
+                                        <exclude>*.dylib</exclude>
+                                        <exclude>*.so</exclude>
+                                        <exclude>*.dll</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.openjfx:javafx-base:jar:17.0.9</artifact>
+                                    <excludes>
+                                        <exclude>*.dylib</exclude>
+                                        <exclude>*.so</exclude>
+                                        <exclude>*.dll</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.openjfx:javafx-fxml:jar:17.0.9</artifact>
+                                    <excludes>
+                                        <exclude>*.dylib</exclude>
+                                        <exclude>*.so</exclude>
+                                        <exclude>*.dll</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
@@ -93,4 +167,27 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Mac x86 本机开发 -->
+        <profile>
+            <id>mac-x86</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <webrtc.java.classifier>macos-x86_64</webrtc.java.classifier>
+                <javafx.classifier>mac</javafx.classifier>
+            </properties>
+        </profile>
+        
+        <!-- Mac ARM64 测试设备 -->
+        <profile>
+            <id>mac-arm</id>
+            <properties>
+                <webrtc.java.classifier>macos-aarch64</webrtc.java.classifier>
+                <javafx.classifier>mac-aarch64</javafx.classifier>
+            </properties>
+        </profile>
+    </profiles>
 </project>
