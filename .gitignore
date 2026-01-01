@@ -1,4 +1,7 @@
 /target/
+/agent-java/target/
 /.cursor/
 .idea/
 *.log
+*.class
+hs_err_*.log

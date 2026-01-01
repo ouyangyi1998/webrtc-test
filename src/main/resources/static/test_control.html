@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>远程控制测试</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #1e293b; color: #fff; }
+        .test-area { 
+            width: 800px; 
+            height: 600px; 
+            background: #0f172a; 
+            border: 2px solid #38bdf8;
+            position: relative;
+            margin: 20px 0;
+            cursor: crosshair;
+        }
+        .log { 
+            background: #0f172a; 
+            padding: 15px; 
+            height: 200px; 
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            border: 1px solid #475569;
+        }
+        button { 
+            background: #0ea5e9; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        button:hover { background: #0284c7; }
+        .status { padding: 10px; background: #334155; margin: 10px 0; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>🎮 WebRTC 远程控制测试</h1>
+    
+    <div class="status">
+        <strong>连接状态:</strong> <span id="status">未连接</span><br>
+        <strong>DataChannel:</strong> <span id="dcStatus">未打开</span>
+    </div>
+    
+    <div>
+        <input type="text" id="roomId" value="test-room" placeholder="房间号" style="padding: 8px; width: 200px;">
+        <input type="text" id="userName" value="test-controller" placeholder="昵称" style="padding: 8px; width: 200px;">
+        <button onclick="connect()">连接</button>
+        <button onclick="disconnect()">断开</button>
+    </div>
+    
+    <h3>测试区域（点击/移动鼠标发送控制指令）</h3>
+    <div class="test-area" id="testArea"></div>
+    
+    <div>
+        <button onclick="sendTestClick()">发送测试点击 (0.5, 0.5)</button>
+        <button onclick="sendTestMove()">发送测试移动 (0.3, 0.3)</button>
+        <button onclick="sendTestKey()">发送测试按键 (a)</button>
+    </div>
+    
+    <h3>日志</h3>
+    <div class="log" id="log"></div>
+    
+    <script>
+        let ws, pc, dataChannel;
+        const log = msg => {
+            const ts = new Date().toLocaleTimeString();
+            document.getElementById('log').innerHTML += `[${ts}] ${msg}<br>`;
+            document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
+            console.log(msg);
+        };
+        
+        const updateStatus = (status, dcStatus) => {
+            if (status) document.getElementById('status').textContent = status;
+            if (dcStatus) document.getElementById('dcStatus').textContent = dcStatus;
+        };
+        
+        function connect() {
+            const roomId = document.getElementById('roomId').value;
+            const userName = document.getElementById('userName').value;
+            
+            ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+            
+            ws.onopen = () => {
+                log('WebSocket 已连接');
+                updateStatus('已连接', 'DataChannel 未打开');
+                ws.send(JSON.stringify({ type: 'join', roomId, sender: userName }));
+            };
+            
+            ws.onmessage = async (event) => {
+                const msg = JSON.parse(event.data);
+                log(`收到消息: ${msg.type}`);
+                
+                switch (msg.type) {
+                    case 'join-ack':
+                        log(`加入成功，房间人数: ${msg.data?.participants || 1}`);
+                        break;
+                    case 'peer-joined':
+                        log('有新成员加入，创建 offer');
+                        await createOffer();
+                        break;
+                    case 'offer':
+                        log('收到 offer，创建 answer');
+                        await handleOffer(msg.data.sdp);
+                        break;
+                    case 'answer':
+                        log('收到 answer');
+                        await pc.setRemoteDescription(new RTCSessionDescription(msg.data.sdp));
+                        break;
+                    case 'candidate':
+                        if (msg.data?.candidate) {
+                            await pc.addIceCandidate(new RTCIceCandidate(msg.data.candidate));
+                        }
+                        break;
+                }
+            };
+            
+            ws.onerror = () => log('WebSocket 错误');
+            ws.onclose = () => {
+                log('WebSocket 已关闭');
+                updateStatus('未连接', 'DataChannel 已关闭');
+            };
+        }
+        
+        async function createOffer() {
+            if (!pc) {
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:43.139.50.108:3478' },
+                        { urls: 'turn:43.139.50.108:3478?transport=udp', username: 'admin', credential: '123456' }
+                    ]
+                });
+                
+                pc.onicecandidate = e => {
+                    if (e.candidate) {
+                        sendSignal('candidate', { candidate: e.candidate });
+                    }
+                };
+                
+                pc.oniceconnectionstatechange = () => {
+                    log(`ICE 连接状态: ${pc.iceConnectionState}`);
+                };
+                
+                pc.onconnectionstatechange = () => {
+                    log(`连接状态: ${pc.connectionState}`);
+                    updateStatus(pc.connectionState, document.getElementById('dcStatus').textContent);
+                };
+                
+                // 创建 DataChannel
+                dataChannel = pc.createDataChannel('data');
+                setupDataChannel();
+            }
+            
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            sendSignal('offer', { sdp: offer });
+        }
+        
+        async function handleOffer(sdp) {
+            if (!pc) {
+                pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:43.139.50.108:3478' },
+                        { urls: 'turn:43.139.50.108:3478?transport=udp', username: 'admin', credential: '123456' }
+                    ]
+                });
+                
+                pc.onicecandidate = e => {
+                    if (e.candidate) sendSignal('candidate', { candidate: e.candidate });
+                };
+                
+                pc.ondatachannel = e => {
+                    dataChannel = e.channel;
+                    setupDataChannel();
+                };
+            }
+            
+            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            sendSignal('answer', { sdp: answer });
+        }
+        
+        function setupDataChannel() {
+            dataChannel.onopen = () => {
+                log('✅ DataChannel 已打开！');
+                updateStatus(null, 'DataChannel 已打开');
+            };
+            dataChannel.onclose = () => {
+                log('DataChannel 已关闭');
+                updateStatus(null, 'DataChannel 已关闭');
+            };
+            dataChannel.onmessage = evt => {
+                log(`收到 DataChannel 消息: ${evt.data}`);
+            };
+        }
+        
+        function sendSignal(type, data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type,
+                    roomId: document.getElementById('roomId').value,
+                    sender: document.getElementById('userName').value,
+                    data
+                }));
+            }
+        }
+        
+        function sendControl(payload) {
+            if (dataChannel && dataChannel.readyState === 'open') {
+                const json = JSON.stringify(payload);
+                dataChannel.send(json);
+                log(`✅ 发送控制指令: ${payload.kind} ${payload.action || payload.type}`);
+                return true;
+            } else {
+                log('❌ DataChannel 未打开，无法发送控制指令');
+                return false;
+            }
+        }
+        
+        function sendTestClick() {
+            sendControl({ kind: 'mouse', action: 'click', xRatio: 0.5, yRatio: 0.5 });
+        }
+        
+        function sendTestMove() {
+            sendControl({ kind: 'mouse', action: 'move', xRatio: 0.3, yRatio: 0.3 });
+        }
+        
+        function sendTestKey() {
+            sendControl({ kind: 'keyboard', type: 'keydown', key: 'a', code: 'KeyA' });
+            setTimeout(() => {
+                sendControl({ kind: 'keyboard', type: 'keyup', key: 'a', code: 'KeyA' });
+            }, 100);
+        }
+        
+        function disconnect() {
+            if (dataChannel) dataChannel.close();
+            if (pc) pc.close();
+            if (ws) ws.close();
+            pc = null;
+            dataChannel = null;
+            ws = null;
+            updateStatus('未连接', 'DataChannel 已关闭');
+        }
+        
+        // 测试区域鼠标事件
+        document.getElementById('testArea').addEventListener('mousemove', e => {
+            const rect = e.target.getBoundingClientRect();
+            const xRatio = (e.clientX - rect.left) / rect.width;
+            const yRatio = (e.clientY - rect.top) / rect.height;
+            sendControl({ kind: 'mouse', action: 'move', xRatio, yRatio });
+        });
+        
+        document.getElementById('testArea').addEventListener('click', e => {
+            const rect = e.target.getBoundingClientRect();
+            const xRatio = (e.clientX - rect.left) / rect.width;
+            const yRatio = (e.clientY - rect.top) / rect.height;
+            sendControl({ kind: 'mouse', action: 'click', xRatio, yRatio });
+        });
+    </script>
+</body>
+</html>

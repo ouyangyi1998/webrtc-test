@@ -23,27 +23,10 @@
   let isInitiator = false;
   let reconnectAttempts = 0;
   let reconnectTimer;
-  let manualLeave = false;
   let connecting = false;
-  let lastRoomId = "";
-  let lastDisplayName = "";
+  let manualLeave = false;
 
   const ensureDefaultValues = () => {
-    // #region agent log
-    fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: "debug-session",
-        runId: "run1",
-        hypothesisId: "H1",
-        location: "room.js:ensureDefaultValues:before",
-        message: "ensureDefaultValues input",
-        data: { roomRaw: roomInput.value, nameRaw: nameInput.value },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     if (!roomInput.value.trim()) {
       roomInput.value =
         roomInput.getAttribute("value") ||
@@ -56,21 +39,6 @@
         nameInput.placeholder ||
         `user-${Math.floor(Math.random() * 1000)}`;
     }
-    // #region agent log
-    fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: "debug-session",
-        runId: "run1",
-        hypothesisId: "H1",
-        location: "room.js:ensureDefaultValues:after",
-        message: "ensureDefaultValues output",
-        data: { roomFinal: roomInput.value, nameFinal: nameInput.value },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
   };
 
   const log = (msg) => {
@@ -87,17 +55,19 @@
     chatArea.scrollTop = chatArea.scrollHeight;
   };
 
-  const isController = () => !!roleController && roleController.checked;
+  const isController = () => true; // Web 端仅作为控制端
   const applyDisplayStyles = () => {
     if (remoteVideo) {
       remoteVideo.style.objectFit = "contain";
       remoteVideo.style.width = "100%";
       remoteVideo.style.height = "100%";
+      remoteVideo.style.pointerEvents = "auto";
+      remoteVideo.style.cursor = "crosshair"; // 显示十字光标
     }
     if (remoteOverlay) {
       remoteOverlay.style.position = "absolute";
       remoteOverlay.style.inset = "0";
-      remoteOverlay.style.pointerEvents = "none";
+      remoteOverlay.style.pointerEvents = "none"; // 让鼠标事件穿透到视频元素
     }
   };
   const videoViewport = (videoEl) => {
@@ -233,16 +203,7 @@
 
   const connectWs = async (isReconnect = false) => {
     if (connecting || (ws && ws.readyState === WebSocket.OPEN)) return;
-    const reconnect = isReconnect === true; // 避免事件对象被当成 true
-    if (!reconnect && !isController()) {
-      try {
-        await startMedia(true); // 在用户点击加入的手势下请求屏幕权限
-      } catch (e) {
-        log("屏幕共享被取消或失败: " + e.message);
-        alert("屏幕共享被取消或失败，请重新选择屏幕");
-        return;
-      }
-    }
+    const reconnect = isReconnect === true;
     // #region agent log
     fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
       method: "POST",
@@ -266,8 +227,8 @@
     }).catch(() => {});
     // #endregion
     ensureDefaultValues();
-    const roomId = reconnect ? lastRoomId : roomInput.value.trim();
-    const sender = reconnect ? lastDisplayName : nameInput.value.trim();
+    const roomId = roomInput.value.trim();
+    const sender = nameInput.value.trim();
     // #region agent log
     fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
       method: "POST",
@@ -278,7 +239,7 @@
         hypothesisId: "H2",
         location: "room.js:connectWs:resolved",
         message: "connectWs resolved identifiers",
-        data: { roomId, sender, lastRoomId, lastDisplayName, isReconnect, reconnect },
+        data: { roomId, sender, isReconnect, reconnect },
         timestamp: Date.now(),
       }),
     }).catch(() => {});
@@ -303,8 +264,6 @@
       return;
     }
     connecting = true;
-    lastRoomId = roomId;
-    lastDisplayName = sender;
     ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
     ws.onopen = () => {
       reconnectAttempts = 0;
@@ -319,7 +278,15 @@
           isJoined = true;
           setUiState(true);
           connState.textContent = "信令已连接";
-          log(`加入成功，房间在线人数: ${msg.data?.participants || 1}`);
+          const participants = msg.data?.participants || 1;
+          log(`加入成功，房间在线人数: ${participants}`);
+          
+          // 如果房间里已经有其他人，主动创建 offer（控制端逻辑）
+          if (participants > 1 && isController()) {
+            log("房间已有成员，作为控制端主动创建 offer");
+            isInitiator = true;
+            await startMediaAndOffer();
+          }
           break;
         case "peer-joined":
           log("有新成员加入，开始创建 offer");
@@ -365,83 +332,27 @@
     };
   };
 
-  const startMedia = async (mustRequest = false) => {
-    if (localStream) return localStream;
-    if (!mustRequest) {
-      const err = new Error("screen_not_ready");
-      // #region agent log
-      fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: "debug-session",
-          runId: "run2",
-          hypothesisId: "H6",
-          location: "room.js:startMedia:skipNoStream",
-          message: "screen not captured yet",
-          data: {},
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-      throw err;
-    }
-    try {
-      localStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-      if (pc) {
-        localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
-      }
-      // #region agent log
-      fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: "debug-session",
-          runId: "run2",
-          hypothesisId: "H6",
-          location: "room.js:startMedia:success",
-          message: "screen captured",
-          data: { tracks: localStream.getTracks().map((t) => ({ kind: t.kind, label: t.label })) },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-      return localStream;
-    } catch (e) {
-      // #region agent log
-      fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: "debug-session",
-          runId: "run2",
-          hypothesisId: "H6",
-          location: "room.js:startMedia:error",
-          message: "media error",
-          data: { name: e.name, message: e.message, stack: (e && e.stack) || null },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-      throw e;
-    }
+  const startMedia = async () => {
+    // 控制端不采集本地媒体
+    return null;
   };
 
   const startMediaAndOffer = async () => {
     ensurePeer();
-    if (!isController()) {
-      try {
-        await startMedia(false);
-      } catch (e) {
-        log("屏幕共享被取消或失败: " + e.message);
-        alert("请先重新点击“加入”并在弹窗中选择屏幕");
-        return;
-      }
-    }
     if (!dataChannel) {
       dataChannel = pc.createDataChannel("data");
       attachDataChannel();
     }
+    
+    // 添加视频接收器，告诉对方我们想接收视频
+    // 检查是否已经有视频 transceiver
+    const transceivers = pc.getTransceivers();
+    const hasVideoTransceiver = transceivers.some(t => t.receiver.track.kind === 'video');
+    if (!hasVideoTransceiver) {
+      log("添加视频接收器 (recvonly)");
+      pc.addTransceiver('video', { direction: 'recvonly' });
+    }
+    
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     sendSignal("offer", { sdp: offer });
@@ -449,15 +360,6 @@
 
   const handleOffer = async (sdp) => {
     ensurePeer();
-    if (!isController()) {
-      try {
-        await startMedia(false);
-      } catch (e) {
-        log("屏幕共享被取消或失败: " + e.message);
-        alert("请先重新点击“加入”并在弹窗中选择屏幕");
-        return;
-      }
-    }
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
@@ -477,24 +379,44 @@
   const sendMouse = (action, xRatio, yRatio, extra = {}) => {
     if (!isController()) return;
     if (!enableMouseChk.checked) return;
-    if (!dataChannel || dataChannel.readyState !== "open") return;
-    if (action !== "move") {
-      log(`发送鼠标${action} (${xRatio.toFixed(3)}, ${yRatio.toFixed(3)})`);
-    }
-    dataChannel.send(
-      JSON.stringify({
+    if (!dataChannel || dataChannel.readyState !== "open") {
+      // 如果 DataChannel 不可用，降级使用 WebSocket
+      log("DataChannel 未就绪，使用 WebSocket 发送控制指令");
+      const payload = {
         kind: "mouse",
         action,
         xRatio,
         yRatio,
         ...extra,
-      })
-    );
+      };
+      sendSignal("control", payload);
+      return;
+    }
+    const payload = {
+      kind: "mouse",
+      action,
+      xRatio,
+      yRatio,
+      ...extra,
+    };
+    if (action !== "move") {
+      log(
+        `发送鼠标${action} (${xRatio.toFixed(3)}, ${yRatio.toFixed(3)})` +
+          (extra.deltaY !== undefined ? ` deltaY=${extra.deltaY}` : "")
+      );
+    }
+    const json = JSON.stringify(payload);
+    // 优先使用 DataChannel（低延迟）
+    try {
+      dataChannel.send(json);
+    } catch (e) {
+      log(`DataChannel 发送失败，降级使用 WebSocket: ${e.message}`);
+      sendSignal("control", payload);
+    }
   };
 
   const sendKeyboard = (type, e) => {
     if (!isController()) return;
-    if (!dataChannel || dataChannel.readyState !== "open") return;
     const payload = {
       kind: "keyboard",
       type,
@@ -506,11 +428,24 @@
       shiftKey: e.shiftKey,
       repeat: e.repeat,
     };
-    dataChannel.send(JSON.stringify(payload));
+    if (!dataChannel || dataChannel.readyState !== "open") {
+      // 降级使用 WebSocket
+      sendSignal("control", payload);
+      return;
+    }
+    const json = JSON.stringify(payload);
+    // 优先使用 DataChannel
+    try {
+      dataChannel.send(json);
+    } catch (e) {
+      log(`DataChannel 发送失败，降级使用 WebSocket: ${e.message}`);
+      sendSignal("control", payload);
+    }
   };
 
   const renderRemoteCursor = (msg) => {
     const overlay = remoteOverlay;
+    if (!overlay) return;
     overlay.style.pointerEvents = "none";
     const vp = videoViewport(remoteVideo);
     if (!vp || !vp.width || !vp.height) return;
@@ -524,25 +459,73 @@
     }
   };
 
+  const getScrollParent = (node) => {
+    if (!node) return null;
+    if (node === document.body || node === document.documentElement) return window;
+    const style = window.getComputedStyle(node);
+    const overflowY = style.overflowY;
+    const scrollable =
+      (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+      node.scrollHeight > node.clientHeight;
+    if (scrollable) return node;
+    return getScrollParent(node.parentElement);
+  };
+
   const applyRemoteMouse = (msg) => {
-    const overlay = remoteOverlay;
-    if (!overlay) return;
-    const rect = overlay.getBoundingClientRect();
-    const x = rect.left + (msg.xRatio || 0) * rect.width;
-    const y = rect.top + (msg.yRatio || 0) * rect.height;
-    const common = { clientX: x, clientY: y, bubbles: true, cancelable: true };
-    const target = document.elementFromPoint(x, y) || overlay;
+    // 控制端：只画光标，不对本页做 DOM 事件
+    if (remoteStream && remoteStream.active) {
+      renderRemoteCursor(msg);
+      return;
+    }
+
+    // 被控端：用窗口尺寸换算坐标
+    const clientW = document.documentElement.clientWidth;
+    const clientH = document.documentElement.clientHeight;
+    const x = (msg.xRatio || 0) * clientW;
+    const y = (msg.yRatio || 0) * clientH;
+
+    // 暂时隐藏视频容器，避免命中视频层
+    const videoWrapper = remoteVideo ? remoteVideo.parentElement : null;
+    const prevDisplay = videoWrapper ? videoWrapper.style.display : "";
+    if (videoWrapper) videoWrapper.style.display = "none";
+
+    const target = document.elementFromPoint(x, y);
+
+    if (videoWrapper) videoWrapper.style.display = prevDisplay;
     if (!target) return;
-    if (msg.action === "move") {
-      target.dispatchEvent(new MouseEvent("mousemove", common));
-    } else if (msg.action === "click") {
-      log(`接收鼠标click (${(msg.xRatio || 0).toFixed(3)}, ${(msg.yRatio || 0).toFixed(3)})`);
-      target.dispatchEvent(new MouseEvent("mousedown", common));
-      target.dispatchEvent(new MouseEvent("mouseup", common));
-      target.dispatchEvent(new MouseEvent("click", common));
+    if (target.tagName === "IFRAME") {
+      log("命中 IFRAME，无法操作");
+      return;
+    }
+
+    if (msg.action === "click") {
+      log(`点击: <${target.tagName} class="${target.className}">`);
+      if (typeof target.focus === "function") target.focus();
+      const opts = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+        button: 0,
+        buttons: 1,
+      };
+      target.dispatchEvent(new PointerEvent("pointerdown", opts));
+      target.dispatchEvent(new MouseEvent("mousedown", opts));
+      target.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
+      target.dispatchEvent(new MouseEvent("mouseup", { ...opts, buttons: 0 }));
+      if (typeof target.click === "function") target.click();
     } else if (msg.action === "wheel") {
-      log(`接收鼠标wheel (${(msg.xRatio || 0).toFixed(3)}, ${(msg.yRatio || 0).toFixed(3)})`);
-      target.dispatchEvent(new WheelEvent("wheel", { ...common, deltaY: msg.deltaY || 0 }));
+      const scrollTarget = getScrollParent(target) || window;
+      log(`滚动: deltaY=${msg.deltaY}`);
+      if (scrollTarget === window) {
+        window.scrollBy(0, msg.deltaY);
+      } else {
+        scrollTarget.scrollTop += msg.deltaY;
+      }
     }
   };
 
@@ -595,35 +578,75 @@
   };
 
   const bindMouseEvents = () => {
-    if (!isController()) return;
+    log("绑定鼠标事件到视频元素");
+    
     const toRatio = (ev) => {
       const vp = videoViewport(remoteVideo);
-       if (!vp || !vp.width || !vp.height) return null;
+      if (!vp || !vp.width || !vp.height) return null;
       const x = (ev.clientX - vp.left) / vp.width;
       const y = (ev.clientY - vp.top) / vp.height;
-      return { x, y };
+      return { x, y, vp };
     };
+    
+    // 鼠标移动事件（节流）
+    let lastMoveTime = 0;
     remoteVideo.addEventListener("mousemove", (ev) => {
+      const now = Date.now();
+      if (now - lastMoveTime < 50) return; // 节流：每50ms最多发送一次
+      lastMoveTime = now;
+      
       const ratio = toRatio(ev);
       if (!ratio) return;
       const { x, y } = ratio;
       if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      
+      // 调试：检查条件
+      if (!isController()) { console.log("不是控制端"); return; }
+      if (!enableMouseChk.checked) { console.log("远程鼠标未启用"); return; }
+      if (!dataChannel) { console.log("DataChannel 不存在"); return; }
+      if (dataChannel.readyState !== "open") { console.log("DataChannel 未打开:", dataChannel.readyState); return; }
+      
+      ev.preventDefault();
       sendMouse("move", x, y);
     });
+    
+    // 鼠标点击事件
     remoteVideo.addEventListener("click", (ev) => {
+      log("视频元素收到点击事件");
       const ratio = toRatio(ev);
-      if (!ratio) return;
+      if (!ratio) { log("无法计算坐标比例"); return; }
       const { x, y } = ratio;
-      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      if (x < 0 || x > 1 || y < 0 || y > 1) { log("坐标超出范围"); return; }
+      
+      if (!isController()) { log("不是控制端"); return; }
+      if (!enableMouseChk.checked) { log("远程鼠标未启用"); return; }
+      if (!dataChannel) { log("DataChannel 不存在"); return; }
+      if (dataChannel.readyState !== "open") { log("DataChannel 未打开: " + dataChannel.readyState); return; }
+      
+      ev.preventDefault();
+      ev.stopPropagation();
       sendMouse("click", x, y);
     });
+    
+    // 滚轮事件
     remoteVideo.addEventListener("wheel", (ev) => {
+      log("视频元素收到滚轮事件: deltaY=" + ev.deltaY);
       const ratio = toRatio(ev);
-      if (!ratio) return;
+      if (!ratio) { log("无法计算坐标比例"); return; }
       const { x, y } = ratio;
-      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      if (x < 0 || x > 1 || y < 0 || y > 1) { log("坐标超出范围"); return; }
+      
+      if (!isController()) { log("不是控制端"); return; }
+      if (!enableMouseChk.checked) { log("远程鼠标未启用"); return; }
+      if (!dataChannel) { log("DataChannel 不存在"); return; }
+      if (dataChannel.readyState !== "open") { log("DataChannel 未打开: " + dataChannel.readyState); return; }
+      
+      ev.preventDefault();
+      ev.stopPropagation();
       sendMouse("wheel", x, y, { deltaY: ev.deltaY });
-    });
+    }, { passive: false }); // passive: false 允许 preventDefault
+    
+    log("鼠标事件绑定完成");
   };
 
   const teardownRtc = (keepLocalStream = false) => {
@@ -699,7 +722,26 @@
     if (e.key === "Enter") sendChat();
   });
 
+  const applyRolePointerMode = () => {
+    const ctrl = isController();
+    if (ctrl) {
+      if (remoteVideo) remoteVideo.classList.remove("pass-through");
+      if (remoteOverlay) remoteOverlay.classList.remove("pass-through");
+    } else {
+      if (remoteVideo) remoteVideo.classList.add("pass-through");
+      if (remoteOverlay) remoteOverlay.classList.add("pass-through");
+    }
+  };
+
   applyDisplayStyles();
   window.addEventListener("resize", () => applyDisplayStyles());
   bindMouseEvents();
+
+  const onRoleChange = () => {
+    log(`角色切换为: ${isController() ? "控制端" : "被控端"}`);
+    applyRolePointerMode();
+  };
+  if (roleController) roleController.addEventListener("change", onRoleChange);
+  if (roleControlled) roleControlled.addEventListener("change", onRoleChange);
+  onRoleChange();
 })(); 

@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebRTC Demo</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 可用于穿透视频/遮罩，避免拦截点击 */
+        .pass-through {
+            pointer-events: none !important;
+            background: transparent !important;
+        }
+    </style>
 </head>
 <body class="bg-slate-900 text-slate-50 min-h-screen">
 <div class="max-w-6xl mx-auto py-8 px-4 space-y-6">
@@ -32,10 +39,10 @@
                 <button id="joinBtn" class="px-4 py-2 rounded bg-emerald-600 hover:bg-emerald-500">加入房间</button>
                 <button id="leaveBtn" class="px-4 py-2 rounded bg-rose-600 hover:bg-rose-500" disabled>离开</button>
                 <label class="inline-flex items-center gap-2 text-sm">
-                    <input id="roleControlled" type="radio" name="role" class="rounded border-slate-600" checked> 被控端(共享屏幕)
+                    <input id="roleControlled" type="radio" name="role" class="rounded border-slate-600" disabled> 被控端(共享屏幕)
                 </label>
                 <label class="inline-flex items-center gap-2 text-sm">
-                    <input id="roleController" type="radio" name="role" class="rounded border-slate-600"> 控制端(仅远程控制)
+                    <input id="roleController" type="radio" name="role" class="rounded border-slate-600" checked> 控制端(仅远程控制)
                 </label>
                 <label class="inline-flex items-center gap-2 text-sm">
                     <input id="enableMouse" type="checkbox" class="rounded border-slate-600" checked> 启用远程鼠标
