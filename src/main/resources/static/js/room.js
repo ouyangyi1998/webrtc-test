@@ -11,7 +11,7 @@
   const sendChatBtn = document.getElementById("sendChat");
   const logArea = document.getElementById("logArea");
   const connState = document.getElementById("connState");
-  
+
   // 视频流控制元素
   const frameRateSelect = document.getElementById("frameRateSelect");
   const bitrateSelect = document.getElementById("bitrateSelect");
@@ -31,7 +31,7 @@
   let reconnectTimer;
   let connecting = false;
   let manualLeave = false;
-  
+
   // 视频流控制相关
   let statsMonitor = null;
   let bitrateAdjuster = null;
@@ -53,7 +53,7 @@
       this.consecutiveBadSamples = 0;
       this.consecutiveGoodSamples = 0;
     }
-    
+
     setMode(mode) {
       this.enabled = (mode === 'auto');
       if (!this.enabled) {
@@ -66,21 +66,21 @@
         this.currentBitrate = bitrateMap[mode] || 2000000;
       }
     }
-    
+
     analyze(metrics) {
       if (!this.enabled) return null;
-      
+
       const now = Date.now();
       if (now - this.lastAdjustTime < this.adjustCooldown) return null;
-      
+
       // 综合判断网络状况
       const isBad = (metrics.packetLoss > 0.05) || (metrics.rtt && metrics.rtt > 100);
       const isGood = (metrics.packetLoss < 0.02) && (metrics.rtt && metrics.rtt < 50);
-      
+
       if (isBad) {
         this.consecutiveBadSamples++;
         this.consecutiveGoodSamples = 0;
-        
+
         // 连续3次不佳则降低码率
         if (this.consecutiveBadSamples >= 3) {
           const newBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
@@ -94,7 +94,7 @@
       } else if (isGood) {
         this.consecutiveGoodSamples++;
         this.consecutiveBadSamples = 0;
-        
+
         // 连续5次良好则提高码率
         if (this.consecutiveGoodSamples >= 5) {
           const newBitrate = Math.min(this.maxBitrate, this.currentBitrate * 1.3);
@@ -106,7 +106,7 @@
           }
         }
       }
-      
+
       return null;
     }
   }
@@ -178,12 +178,20 @@
       // 计算码率和帧率
       if (this.lastStats) {
         const timeDiff = (metrics.timestamp - this.lastStats.timestamp) / 1000; // 秒
-        if (timeDiff > 0) {
+        if (timeDiff >= 0.5) {  // 至少0.5秒才计算，避免采样间隔太短导致数值不准
           const bytesDiff = metrics.bytesReceived - this.lastStats.bytesReceived;
           metrics.bitrate = (bytesDiff * 8) / timeDiff; // bps
 
           const framesDiff = metrics.framesDecoded - this.lastStats.framesDecoded;
           metrics.fps = framesDiff / timeDiff;
+
+          // 保存本次计算结果，供下次 timeDiff 不足时使用
+          this.lastCalculatedFps = metrics.fps;
+          this.lastCalculatedBitrate = metrics.bitrate;
+        } else {
+          // timeDiff 太小，使用上次计算的值
+          metrics.fps = this.lastCalculatedFps;
+          metrics.bitrate = this.lastCalculatedBitrate;
         }
       }
 
@@ -193,7 +201,7 @@
           metrics.rtt = candidatePair.currentRoundTripTime * 1000; // 转换为ms
         }
       }
-      
+
       // 如果候选对中没有RTT，尝试从inbound-rtp中获取
       if (!metrics.rtt && inboundRtp.roundTripTime !== undefined) {
         metrics.rtt = inboundRtp.roundTripTime * 1000;
@@ -229,10 +237,10 @@
   // ===== 流控制相关函数 =====
   const applyStreamConfig = async () => {
     if (!pc || !isJoined) return;
-    
+
     streamConfig.frameRate = parseInt(frameRateSelect.value);
     streamConfig.bitrateMode = bitrateSelect.value;
-    
+
     // 根据档位设置目标码率
     const bitrateMap = {
       'smooth': 500000,    // 500kbps
@@ -241,9 +249,9 @@
       'auto': 2000000      // 默认2Mbps，后续由自动调整
     };
     streamConfig.targetBitrate = bitrateMap[streamConfig.bitrateMode] || 2000000;
-    
-    log(`应用流配置: ${streamConfig.frameRate}fps, ${streamConfig.bitrateMode}, ${(streamConfig.targetBitrate/1000).toFixed(0)}kbps`);
-    
+
+    log(`应用流配置: ${streamConfig.frameRate}fps, ${streamConfig.bitrateMode}, ${(streamConfig.targetBitrate / 1000).toFixed(0)}kbps`);
+
     // 通过信令发送配置到Agent
     sendSignal('stream_config', streamConfig);
   };
@@ -377,22 +385,22 @@
       }
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
         logSelectedCandidate();
-        
+
         // 启动网络统计监控
         if (!statsMonitor) {
           statsMonitor = new NetworkStatsMonitor(pc);
           bitrateAdjuster = new BitrateAdjuster();
           bitrateAdjuster.setMode(bitrateSelect.value);
-          
+
           statsMonitor.onStatsUpdate = (metrics) => {
             updateStatsDisplay(metrics);
-            
+
             // 自动码率调整
             if (bitrateAdjuster && bitrateAdjuster.enabled) {
               const newBitrate = bitrateAdjuster.analyze(metrics);
               if (newBitrate !== null) {
                 streamConfig.targetBitrate = newBitrate;
-                log(`自动调整码率: ${(newBitrate/1000).toFixed(0)}kbps`);
+                log(`自动调整码率: ${(newBitrate / 1000).toFixed(0)}kbps`);
                 sendSignal('stream_config', streamConfig);
               }
             }
@@ -400,11 +408,11 @@
           statsMonitor.start();
           log("网络统计监控已启动");
         }
-        
+
         // 应用初始流配置
         applyStreamConfig();
       }
-      
+
       // 连接断开时停止监控
       if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
         if (statsMonitor) {
@@ -447,7 +455,7 @@
       chatInput.style.opacity = "0.5";
     }
   };
-  
+
   // 初始禁用聊天
   enableChat(false);
 
@@ -512,7 +520,7 @@
         },
         timestamp: Date.now(),
       }),
-    }).catch(() => {});
+    }).catch(() => { });
     // #endregion
     ensureDefaultValues();
     const roomId = roomInput.value.trim();
@@ -530,7 +538,7 @@
         data: { roomId, sender, isReconnect, reconnect },
         timestamp: Date.now(),
       }),
-    }).catch(() => {});
+    }).catch(() => { });
     // #endregion
     if (!roomId || !sender) {
       // #region agent log
@@ -543,10 +551,10 @@
           hypothesisId: "H3",
           location: "room.js:connectWs:validationFailed",
           message: "missing required fields",
-        data: { roomId, sender, isReconnect, reconnect },
+          data: { roomId, sender, isReconnect, reconnect },
           timestamp: Date.now(),
         }),
-      }).catch(() => {});
+      }).catch(() => { });
       // #endregion
       alert("房间号和昵称必填");
       return;
@@ -568,7 +576,7 @@
           connState.textContent = "信令已连接";
           const participants = msg.data?.participants || 1;
           log(`加入成功，房间在线人数: ${participants}`);
-          
+
           // 如果房间里已经有其他人，主动创建 offer（控制端逻辑）
           if (participants > 1 && isController()) {
             log("房间已有成员，作为控制端主动创建 offer");
@@ -632,7 +640,7 @@
       dataChannel = pc.createDataChannel("data");
       attachDataChannel();
     }
-    
+
     // 添加视频接收器，告诉对方我们想接收视频
     // 检查是否已经有视频 transceiver
     const transceivers = pc.getTransceivers();
@@ -641,7 +649,7 @@
       log("添加视频接收器 (recvonly)");
       pc.addTransceiver('video', { direction: 'recvonly' });
     }
-    
+
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     sendSignal("offer", { sdp: offer });
@@ -691,7 +699,7 @@
     if (action !== "move") {
       log(
         `发送鼠标${action} (${xRatio.toFixed(3)}, ${yRatio.toFixed(3)})` +
-          (extra.deltaY !== undefined ? ` deltaY=${extra.deltaY}` : "")
+        (extra.deltaY !== undefined ? ` deltaY=${extra.deltaY}` : "")
       );
     }
     const json = JSON.stringify(payload);
@@ -868,7 +876,7 @@
 
   const bindMouseEvents = () => {
     log("绑定鼠标事件到视频元素");
-    
+
     const toRatio = (ev) => {
       const vp = videoViewport(remoteVideo);
       if (!vp || !vp.width || !vp.height) return null;
@@ -876,29 +884,29 @@
       const y = (ev.clientY - vp.top) / vp.height;
       return { x, y, vp };
     };
-    
+
     // 鼠标移动事件（节流）
     let lastMoveTime = 0;
     remoteVideo.addEventListener("mousemove", (ev) => {
       const now = Date.now();
       if (now - lastMoveTime < 50) return; // 节流：每50ms最多发送一次
       lastMoveTime = now;
-      
+
       const ratio = toRatio(ev);
       if (!ratio) return;
       const { x, y } = ratio;
       if (x < 0 || x > 1 || y < 0 || y > 1) return;
-      
+
       // 调试：检查条件
       if (!isController()) { console.log("不是控制端"); return; }
       if (!enableMouseChk.checked) { console.log("远程鼠标未启用"); return; }
       if (!dataChannel) { console.log("DataChannel 不存在"); return; }
       if (dataChannel.readyState !== "open") { console.log("DataChannel 未打开:", dataChannel.readyState); return; }
-      
+
       ev.preventDefault();
       sendMouse("move", x, y);
     });
-    
+
     // 鼠标点击事件（支持左键、中键、右键）
     remoteVideo.addEventListener("mousedown", (ev) => {
       // 只处理mousedown，不用click，以支持不同按钮
@@ -906,33 +914,33 @@
       if (!ratio) { log("无法计算坐标比例"); return; }
       const { x, y } = ratio;
       if (x < 0 || x > 1 || y < 0 || y > 1) { log("坐标超出范围"); return; }
-      
+
       if (!isController()) { log("不是控制端"); return; }
       if (!enableMouseChk.checked) { log("远程鼠标未启用"); return; }
       if (!dataChannel) { log("DataChannel 不存在"); return; }
       if (dataChannel.readyState !== "open") { log("DataChannel 未打开: " + dataChannel.readyState); return; }
-      
+
       log(`视频元素收到鼠标按下事件: button=${ev.button}`);
       ev.preventDefault();
       ev.stopPropagation();
       sendMouse("mousedown", x, y, { button: ev.button });
     });
-    
+
     remoteVideo.addEventListener("mouseup", (ev) => {
       const ratio = toRatio(ev);
       if (!ratio) return;
       const { x, y } = ratio;
       if (x < 0 || x > 1 || y < 0 || y > 1) return;
-      
+
       if (!isController()) return;
       if (!enableMouseChk.checked) return;
       if (!dataChannel || dataChannel.readyState !== "open") return;
-      
+
       ev.preventDefault();
       ev.stopPropagation();
       sendMouse("mouseup", x, y, { button: ev.button });
     });
-    
+
     // 双击事件
     remoteVideo.addEventListener("dblclick", (ev) => {
       log("视频元素收到双击事件");
@@ -940,17 +948,17 @@
       if (!ratio) { log("无法计算坐标比例"); return; }
       const { x, y } = ratio;
       if (x < 0 || x > 1 || y < 0 || y > 1) { log("坐标超出范围"); return; }
-      
+
       if (!isController()) { log("不是控制端"); return; }
       if (!enableMouseChk.checked) { log("远程鼠标未启用"); return; }
       if (!dataChannel) { log("DataChannel 不存在"); return; }
       if (dataChannel.readyState !== "open") { log("DataChannel 未打开: " + dataChannel.readyState); return; }
-      
+
       ev.preventDefault();
       ev.stopPropagation();
       sendMouse("dblclick", x, y, { button: ev.button });
     });
-    
+
     // 右键菜单（阻止默认菜单，发送右键点击）
     remoteVideo.addEventListener("contextmenu", (ev) => {
       log("视频元素收到右键菜单事件");
@@ -958,7 +966,7 @@
       ev.stopPropagation();
       // 右键点击已经通过mousedown/mouseup处理，这里只需阻止默认菜单
     });
-    
+
     // 滚轮事件
     remoteVideo.addEventListener("wheel", (ev) => {
       log("视频元素收到滚轮事件: deltaY=" + ev.deltaY);
@@ -966,21 +974,28 @@
       if (!ratio) { log("无法计算坐标比例"); return; }
       const { x, y } = ratio;
       if (x < 0 || x > 1 || y < 0 || y > 1) { log("坐标超出范围"); return; }
-      
+
       if (!isController()) { log("不是控制端"); return; }
       if (!enableMouseChk.checked) { log("远程鼠标未启用"); return; }
       if (!dataChannel) { log("DataChannel 不存在"); return; }
       if (dataChannel.readyState !== "open") { log("DataChannel 未打开: " + dataChannel.readyState); return; }
-      
+
       ev.preventDefault();
       ev.stopPropagation();
       sendMouse("wheel", x, y, { deltaY: ev.deltaY });
     }, { passive: false }); // passive: false 允许 preventDefault
-    
+
     log("鼠标事件绑定完成");
   };
 
   const teardownRtc = (keepLocalStream = false) => {
+    // 清理网络统计监控器
+    if (statsMonitor) {
+      statsMonitor.stop();
+      statsMonitor = null;
+    }
+    bitrateAdjuster = null;
+
     if (dataChannel) {
       dataChannel.close();
       dataChannel = null;
@@ -1039,7 +1054,7 @@
     sendSignal("leave", {});
     cleanup(true);
   });
-  
+
   // 视频流控制事件监听
   frameRateSelect.addEventListener("change", () => {
     if (isJoined) applyStreamConfig();
@@ -1052,7 +1067,7 @@
       applyStreamConfig();
     }
   });
-  
+
   document.addEventListener("keydown", (e) => {
     // 过滤纯修饰键重复
     if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") {
@@ -1071,5 +1086,5 @@
   applyDisplayStyles();
   window.addEventListener("resize", () => applyDisplayStyles());
   bindMouseEvents();
-  
+
 })(); 

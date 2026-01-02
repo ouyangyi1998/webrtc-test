@@ -18,7 +18,7 @@ public class AgentClient extends WebSocketClient {
     private final ControlHandler controlHandler;
     private final StatusListener listener;
     private WebRTCManager webRTCManager;
-    
+
     // 重连相关
     private volatile boolean shouldReconnect = true;
     private int reconnectAttempts = 0;

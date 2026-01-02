@@ -113,7 +113,7 @@ public class ScreenCaptureSource {
         
         if (videoSource != null) {
             try {
-                videoSource.dispose();
+            videoSource.dispose();
                 System.out.println("VideoSource 已释放");
             } catch (Exception e) {
                 System.err.println("释放 VideoSource 失败: " + e.getMessage());
@@ -288,14 +288,14 @@ public class ScreenCaptureSource {
                 if (x2 >= width) break;
                 
                 int rgbIndex = rowOffset + x2 * 3;
-                int b = rgbData[rgbIndex] & 0xFF;
+                    int b = rgbData[rgbIndex] & 0xFF;
                 int g = rgbData[rgbIndex + 1] & 0xFF;
-                int r = rgbData[rgbIndex + 2] & 0xFF;
-                
-                // RGB 到 U 和 V
+                    int r = rgbData[rgbIndex + 2] & 0xFF;
+                    
+                    // RGB 到 U 和 V
                 int uVal = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
                 int vVal = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                
+                    
                 uVal = uVal < 0 ? 0 : (uVal > 255 ? 255 : uVal);
                 vVal = vVal < 0 ? 0 : (vVal > 255 ? 255 : vVal);
                 

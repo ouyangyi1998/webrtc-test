@@ -12,7 +12,7 @@ public class ControlHandler {
     private final Robot robot;
     private final AgentClient.StatusListener listener;
     private final Dimension screen;
-    
+
     // JavaScript key.code 到 Java KeyEvent.VK_* 的映射
     private static final Map<String, Integer> KEY_CODE_MAP = new HashMap<>();
     
@@ -114,11 +114,11 @@ public class ControlHandler {
 
     public void handleMouse(JsonNode node) {
         try {
-            double xRatio = node.path("xRatio").asDouble(0);
-            double yRatio = node.path("yRatio").asDouble(0);
-            int x = (int) Math.round(xRatio * screen.width);
-            int y = (int) Math.round(yRatio * screen.height);
-            String action = node.path("action").asText("");
+        double xRatio = node.path("xRatio").asDouble(0);
+        double yRatio = node.path("yRatio").asDouble(0);
+        int x = (int) Math.round(xRatio * screen.width);
+        int y = (int) Math.round(yRatio * screen.height);
+        String action = node.path("action").asText("");
             int button = node.path("button").asInt(0); // 0=左键, 1=中键, 2=右键
             
             switch (action) {
@@ -155,17 +155,17 @@ public class ControlHandler {
                     
                 case "contextmenu":
                     // 右键菜单
-                    robot.mouseMove(x, y);
+            robot.mouseMove(x, y);
                     robot.mousePress(InputEvent.BUTTON3_DOWN_MASK);
                     robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK);
                     break;
                     
                 case "wheel":
-                    robot.mouseMove(x, y);
+            robot.mouseMove(x, y);
                     int deltaY = (int) Math.round(node.path("deltaY").asDouble(0) / 40.0);
                     if (deltaY != 0) {
-                        robot.mouseWheel(deltaY);
-                    }
+            robot.mouseWheel(deltaY);
+        }
                     break;
                     
                 default:
@@ -177,7 +177,7 @@ public class ControlHandler {
             if (!"move".equals(action)) {
                 listener.onStatus(String.format("Mouse %s btn=%d (%.3f,%.3f) -> %d,%d", 
                     action, button, xRatio, yRatio, x, y));
-            }
+    }
         } catch (Exception e) {
             listener.onStatus("鼠标操作失败: " + e.getMessage());
         }
@@ -197,8 +197,8 @@ public class ControlHandler {
 
     public void handleKeyboard(JsonNode node) {
         try {
-            String type = node.path("type").asText("");
-            String key = node.path("key").asText("");
+        String type = node.path("type").asText("");
+        String key = node.path("key").asText("");
             String code = node.path("code").asText("");
             
             // 尝试从 code 获取键码（更准确）
@@ -211,14 +211,14 @@ public class ControlHandler {
             
             if (keyCode == null) {
                 listener.onStatus("Skip unsupported key: " + key + " (code: " + code + ")");
-                return;
-            }
+            return;
+        }
             
-            if ("keydown".equals(type)) {
+        if ("keydown".equals(type)) {
                 robot.keyPress(keyCode);
-            } else if ("keyup".equals(type)) {
+        } else if ("keyup".equals(type)) {
                 robot.keyRelease(keyCode);
-            }
+        }
             
             listener.onStatus("Key " + type + ": " + key + " (code: " + code + ")");
         } catch (Exception e) {

@@ -27,7 +27,7 @@
 git clone https://github.com/your-username/webrtc-test.git
 cd webrtc-test
 
-# 启动服务（需要 JDK 11+）
+# 启动服务（需要 JDK 1.8+）
 mvn spring-boot:run
 
 # 或使用打包后的 JAR
@@ -45,12 +45,12 @@ java -jar target/webrtc-demo-0.0.1-SNAPSHOT.jar
 - Intel Mac (x86_64): `agent-java/target/webrtc-agent-macos-x86_64.jar`
 - Apple Silicon (M1/M2/M3): `agent-java/target/webrtc-agent-macos-arm64.jar`
 
-**运行**：
+**运行**（需要 Java 17+）：
 ```bash
 # Intel Mac
 java -jar webrtc-agent-macos-x86_64.jar
 
-# Apple Silicon (需要 Java 17+)
+# Apple Silicon
 java -jar webrtc-agent-macos-arm64.jar
 ```
 
@@ -58,7 +58,7 @@ java -jar webrtc-agent-macos-arm64.jar
 1. **屏幕录制**：系统设置 → 隐私与安全性 → 屏幕录制 → 添加 Java
 2. **辅助功能**：系统设置 → 隐私与安全性 → 辅助功能 → 添加 Java/Terminal
 
-**Java 17 安装** (Apple Silicon 必需)：
+**Java 17 安装**（所有 macOS 平台必需）：
 ```bash
 brew install openjdk@17
 ```
@@ -66,6 +66,7 @@ brew install openjdk@17
 #### Windows
 
 ```bash
+# 需要 Java 17+
 java -jar webrtc-agent-windows.jar
 ```
 
@@ -91,7 +92,7 @@ java -jar webrtc-agent-windows.jar
 
 ### 帧率控制
 
-支持 5/10/15/20/25/30 FPS 可选，默认 15 FPS
+支持 15/20/30 FPS 可选，默认 15 FPS
 
 ### 远程控制
 
@@ -181,12 +182,12 @@ webrtc-test/
 ├── agent-java/                   # Java Agent 被控端
 │   ├── src/main/java/
 │   │   └── com/example/agent/
-│   │       ├── javafx/           # JavaFX UI
-│   │       ├── AgentClient.java  # WebSocket 客户端
-│   │       ├── WebRTCManager.java# WebRTC 管理
+│   │       ├── javafx/              # JavaFX UI (AgentAppFX, ConfigManager, LogManager)
+│   │       ├── AgentClient.java     # WebSocket 客户端
+│   │       ├── WebRTCManager.java   # WebRTC 管理
 │   │       ├── ScreenCaptureSource.java # 屏幕捕获
-│   │       ├── ControlHandler.java # 输入控制
-│   │       └── Launcher.java     # 启动器
+│   │       ├── ControlHandler.java  # 输入控制
+│   │       └── Launcher.java        # 启动器
 │   ├── pom.xml
 │   ├── build-all.sh              # 多平台打包脚本
 │   └── target/
@@ -242,8 +243,7 @@ Agent 首次运行时需要授予以下权限：
 
 ### 已知问题
 
-- Apple Silicon Mac 需要 Java 17+（JavaFX 17 要求）
-- Intel Mac 可使用 Java 11+
+- Agent 需要 Java 17+（因为使用 JavaFX 17）
 - Windows 某些场景需要管理员权限
 
 ## 🤝 贡献
@@ -262,5 +262,8 @@ MIT License
 
 ---
 
-**开发者**: 您的名字  
-**最后更新**: 2026-01-02
+### 常见问题
+- Web 控制端需通过 HTTPS 或 localhost 访问才能使用 WebRTC 功能（getUserMedia 和 RTCPeerConnection 的浏览器安全要求）。
+- Java Agent 需要屏幕录制和输入控制权限（macOS："屏幕录制"+"辅助功能"；Windows：管理员权限）。
+- TURN 未配置时，某些 NAT 环境下可能无法建立 P2P 连接。
+- WebRTC 原生库需要匹配运行平台（macOS arm64、macOS x64、Windows、Linux 等），修改 agent-java/pom.xml 中的 `webrtc.java.classifier` 属性。

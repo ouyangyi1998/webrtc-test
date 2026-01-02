@@ -700,7 +700,7 @@ public class WebRTCManager {
         listener.onStatus("开始清理 WebRTC 资源...");
         
         // 1. 关闭 DataChannel
-        if (dataChannel != null) {
+            if (dataChannel != null) {
             try {
                 listener.onStatus("关闭 DataChannel...");
                 dataChannel.close();
@@ -713,7 +713,7 @@ public class WebRTCManager {
         }
         
         // 2. 停止屏幕捕获
-        if (screenSource != null) {
+            if (screenSource != null) {
             try {
                 listener.onStatus("停止屏幕捕获...");
                 screenSource.stop();
@@ -729,7 +729,7 @@ public class WebRTCManager {
         videoSender = null;
         
         // 3. 关闭 PeerConnection
-        if (peerConnection != null) {
+            if (peerConnection != null) {
             try {
                 listener.onStatus("关闭 PeerConnection...");
                 peerConnection.close();
@@ -742,7 +742,7 @@ public class WebRTCManager {
         }
         
         // 4. 释放 PeerConnectionFactory
-        if (factory != null) {
+            if (factory != null) {
             try {
                 listener.onStatus("释放 PeerConnectionFactory...");
                 factory.dispose();
