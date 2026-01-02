@@ -29,7 +29,8 @@ public class AgentClient extends WebSocketClient {
         void onStatus(String s);
     }
 
-    public AgentClient(URI serverUri, String roomId, String name, ControlHandler controlHandler, StatusListener listener) {
+    public AgentClient(URI serverUri, String roomId, String name, ControlHandler controlHandler,
+            StatusListener listener) {
         super(serverUri);
         this.roomId = roomId;
         this.name = name;
@@ -56,8 +57,7 @@ public class AgentClient extends WebSocketClient {
                     mapper.createObjectNode()
                             .put("type", "join")
                             .put("roomId", roomId)
-                            .put("sender", name)
-            ));
+                            .put("sender", name)));
         } catch (Exception e) {
             listener.onStatus("Send join failed: " + e.getMessage());
         }
@@ -68,7 +68,7 @@ public class AgentClient extends WebSocketClient {
         try {
             JsonNode root = mapper.readTree(message);
             String type = root.path("type").asText("");
-            
+
             // 房间信令消息
             if ("join-ack".equalsIgnoreCase(type)) {
                 int participants = root.path("data").path("participants").asInt(1);
@@ -85,7 +85,7 @@ public class AgentClient extends WebSocketClient {
                     // 只清理RTC连接，保持WebSocket连接
                     webRTCManager.cleanupRtcOnly();
                 }
-            // WebRTC 信令消息
+                // WebRTC 信令消息
             } else if ("offer".equalsIgnoreCase(type)) {
                 if (webRTCManager != null) {
                     JsonNode sdp = root.path("data").path("sdp");
@@ -129,13 +129,13 @@ public class AgentClient extends WebSocketClient {
         if (webRTCManager != null) {
             webRTCManager.cleanup();
         }
-        
-        // 自动重连（非手动断开且是远端断开时）
-        if (shouldReconnect && remote) {
+
+        // 自动重连（非手动断开时）
+        if (shouldReconnect) {
             scheduleReconnect();
         }
     }
-    
+
     /**
      * 调度自动重连（指数退避策略）
      */
@@ -144,11 +144,11 @@ public class AgentClient extends WebSocketClient {
             listener.onStatus("重连执行器已关闭，无法重连");
             return;
         }
-        
+
         int delay = Math.min(1000 * (int) Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
         reconnectAttempts++;
         listener.onStatus("将在 " + delay + "ms 后尝试重连... (第" + reconnectAttempts + "次)");
-        
+
         reconnectExecutor.schedule(() -> {
             if (!shouldReconnect) {
                 listener.onStatus("重连已取消");
@@ -185,7 +185,7 @@ public class AgentClient extends WebSocketClient {
             listener.onStatus("发送信令失败: " + e.getMessage());
         }
     }
-    
+
     /**
      * 手动停止连接并禁用自动重连
      */
@@ -201,7 +201,7 @@ public class AgentClient extends WebSocketClient {
             listener.onStatus("关闭连接异常: " + e.getMessage());
         }
     }
-    
+
     /**
      * 启用自动重连
      */

@@ -13,15 +13,16 @@ import java.util.Collections;
 import java.util.List;
 
 public class WebRTCManager {
-    
+
     /**
      * 聊天消息监听器接口
      */
     public interface ChatListener {
         void onChatMessage(String sender, String message);
+
         void onDataChannelStateChange(boolean isOpen);
     }
-    
+
     private final ObjectMapper mapper = new ObjectMapper();
     private final AgentClient client;
     private final AgentClient.StatusListener listener;
@@ -30,7 +31,7 @@ public class WebRTCManager {
     private final String turnUser;
     private final String turnPass;
     private final ControlHandler controlHandler;
-    
+
     private ChatListener chatListener;
 
     private PeerConnectionFactory factory;
@@ -39,7 +40,12 @@ public class WebRTCManager {
     private RTCDataChannel dataChannel;
     private RTCRtpSender videoSender;
     private int currentTargetBitrate = 2000000;
-    
+
+    // 待应用的配置（在 videoSender 创建前收到的配置会暂存这里）
+    private int pendingFrameRate = 15;
+    private int pendingBitrate = 2000000;
+    private boolean hasPendingConfig = false;
+
     /**
      * 设置聊天消息监听器
      */
@@ -48,8 +54,8 @@ public class WebRTCManager {
     }
 
     public WebRTCManager(AgentClient client, AgentClient.StatusListener listener,
-                  String[] stunUrls, String[] turnUrls, String turnUser, String turnPass,
-                  ControlHandler controlHandler) {
+            String[] stunUrls, String[] turnUrls, String turnUser, String turnPass,
+            ControlHandler controlHandler) {
         this.client = client;
         this.listener = listener;
         this.stunUrls = stunUrls;
@@ -62,13 +68,13 @@ public class WebRTCManager {
     public void init() {
         try {
             listener.onStatus("初始化 WebRTC...");
-            
+
             // 初始化 PeerConnectionFactory
             factory = new PeerConnectionFactory();
-            
+
             // 配置 ICE 服务器
             List<RTCIceServer> iceServers = new ArrayList<>();
-            
+
             // 添加 STUN 服务器
             if (stunUrls != null) {
                 for (String url : stunUrls) {
@@ -79,7 +85,7 @@ public class WebRTCManager {
                     }
                 }
             }
-            
+
             // 添加 TURN 服务器
             if (turnUrls != null) {
                 for (String url : turnUrls) {
@@ -92,14 +98,14 @@ public class WebRTCManager {
                     }
                 }
             }
-            
+
             // 创建 RTCConfiguration
             RTCConfiguration config = new RTCConfiguration();
             config.iceServers = iceServers;
             config.iceTransportPolicy = RTCIceTransportPolicy.ALL;
             config.bundlePolicy = RTCBundlePolicy.BALANCED;
             config.rtcpMuxPolicy = RTCRtcpMuxPolicy.REQUIRE;
-            
+
             // 创建 PeerConnection
             peerConnection = factory.createPeerConnection(config, new PeerConnectionObserver() {
                 @Override
@@ -110,10 +116,10 @@ public class WebRTCManager {
                         candidateJson.put("candidate", candidate.sdp);
                         candidateJson.put("sdpMid", candidate.sdpMid);
                         candidateJson.put("sdpMLineIndex", candidate.sdpMLineIndex);
-                        
+
                         ObjectNode data = mapper.createObjectNode();
                         data.set("candidate", candidateJson);
-                        
+
                         client.sendSignal("candidate", data);
                     } catch (Exception e) {
                         listener.onStatus("发送 ICE 候选失败: " + e.getMessage());
@@ -128,7 +134,7 @@ public class WebRTCManager {
                 @Override
                 public void onIceConnectionChange(RTCIceConnectionState state) {
                     listener.onStatus("ICE 连接状态: " + state);
-                    
+
                     // ICE连接失败时尝试重启
                     if (state == RTCIceConnectionState.FAILED) {
                         listener.onStatus("ICE连接失败，尝试重启...");
@@ -167,31 +173,31 @@ public class WebRTCManager {
                 public void onDataChannel(RTCDataChannel channel) {
                     listener.onStatus("收到数据通道: " + channel.getLabel());
                     dataChannel = channel;
-                    
+
                     // 设置 DataChannel 监听器
                     channel.registerObserver(new RTCDataChannelObserver() {
                         @Override
                         public void onStateChange() {
                             RTCDataChannelState state = channel.getState();
                             listener.onStatus("DataChannel 状态: " + state);
-                            
+
                             // 通知聊天监听器状态变化
                             if (chatListener != null) {
                                 chatListener.onDataChannelStateChange(state == RTCDataChannelState.OPEN);
                             }
                         }
-                        
+
                         @Override
                         public void onMessage(RTCDataChannelBuffer buffer) {
                             try {
                                 byte[] data = new byte[buffer.data.remaining()];
                                 buffer.data.get(data);
                                 String message = new String(data, java.nio.charset.StandardCharsets.UTF_8);
-                                
+
                                 // 解析 JSON 消息
                                 JsonNode root = mapper.readTree(message);
                                 String kind = root.path("kind").asText("");
-                                
+
                                 if ("mouse".equals(kind)) {
                                     controlHandler.handleMouse(root);
                                 } else if ("keyboard".equals(kind)) {
@@ -200,7 +206,7 @@ public class WebRTCManager {
                                     String sender = root.path("sender").asText("对方");
                                     String text = root.path("text").asText("");
                                     listener.onStatus("收到消息: " + sender + ": " + text);
-                                    
+
                                     // 通知聊天监听器
                                     if (chatListener != null) {
                                         chatListener.onChatMessage(sender, text);
@@ -210,7 +216,7 @@ public class WebRTCManager {
                                 listener.onStatus("处理 DataChannel 消息失败: " + e.getMessage());
                             }
                         }
-                        
+
                         @Override
                         public void onBufferedAmountChange(long previousAmount) {
                             // 可选：监控缓冲区变化
@@ -233,7 +239,7 @@ public class WebRTCManager {
                     listener.onStatus("远端流移除");
                 }
             });
-            
+
             listener.onStatus("WebRTC 初始化完成");
         } catch (Exception e) {
             listener.onStatus("WebRTC 初始化失败: " + e.getMessage());
@@ -244,18 +250,18 @@ public class WebRTCManager {
     public void handleOffer(JsonNode sdpNode) {
         try {
             listener.onStatus("处理 offer...");
-            
+
             // 在处理 offer 之前先准备视频轨道
             if (screenSource == null) {
                 startScreenCapture();
             }
-            
+
             String sdpStr = sdpNode.path("sdp").asText();
             String type = sdpNode.path("type").asText();
-            
+
             RTCSessionDescription offer = new RTCSessionDescription(
                     RTCSdpType.OFFER, sdpStr);
-            
+
             peerConnection.setRemoteDescription(offer, new SetSessionDescriptionObserver() {
                 @Override
                 public void onSuccess() {
@@ -277,7 +283,7 @@ public class WebRTCManager {
     private void createAnswer() {
         try {
             // 视频轨道已在 handleOffer 中添加
-            
+
             RTCAnswerOptions options = new RTCAnswerOptions();
             peerConnection.createAnswer(options, new CreateSessionDescriptionObserver() {
                 @Override
@@ -291,10 +297,10 @@ public class WebRTCManager {
                                 ObjectNode sdpJson = mapper.createObjectNode();
                                 sdpJson.put("type", answer.sdpType.toString().toLowerCase());
                                 sdpJson.put("sdp", answer.sdp);
-                                
+
                                 ObjectNode data = mapper.createObjectNode();
                                 data.set("sdp", sdpJson);
-                                
+
                                 client.sendSignal("answer", data);
                             } catch (Exception e) {
                                 listener.onStatus("发送 answer 失败: " + e.getMessage());
@@ -322,12 +328,12 @@ public class WebRTCManager {
     public void handleAnswer(JsonNode sdpNode) {
         try {
             listener.onStatus("处理 answer...");
-            
+
             String sdpStr = sdpNode.path("sdp").asText();
-            
+
             RTCSessionDescription answer = new RTCSessionDescription(
                     RTCSdpType.ANSWER, sdpStr);
-            
+
             peerConnection.setRemoteDescription(answer, new SetSessionDescriptionObserver() {
                 @Override
                 public void onSuccess() {
@@ -350,10 +356,10 @@ public class WebRTCManager {
             String candidate = candidateNode.path("candidate").asText();
             String sdpMid = candidateNode.path("sdpMid").asText();
             int sdpMLineIndex = candidateNode.path("sdpMLineIndex").asInt();
-            
+
             RTCIceCandidate iceCandidate = new RTCIceCandidate(sdpMid, sdpMLineIndex, candidate);
             peerConnection.addIceCandidate(iceCandidate);
-            
+
             listener.onStatus("添加 ICE 候选成功");
         } catch (Exception e) {
             listener.onStatus("添加 ICE 候选失败: " + e.getMessage());
@@ -365,20 +371,23 @@ public class WebRTCManager {
             int frameRate = configNode.path("frameRate").asInt(15);
             String bitrateMode = configNode.path("bitrateMode").asText("auto");
             int targetBitrate = configNode.path("targetBitrate").asInt(2000000);
-            
-            listener.onStatus("收到流配置: " + frameRate + "fps, " + bitrateMode + 
-                            ", " + (targetBitrate/1000) + "kbps");
-            
-            // 更新帧率
+
+            listener.onStatus("收到流配置: " + frameRate + "fps, " + bitrateMode +
+                    ", " + (targetBitrate / 1000) + "kbps");
+
+            // 保存配置
+            pendingFrameRate = frameRate;
+            pendingBitrate = targetBitrate;
+            hasPendingConfig = true;
+
+            // 如果已经有 screenSource 和 videoSender，立即应用
             if (screenSource != null) {
                 screenSource.updateFrameRate(frameRate);
             }
-            
-            // 更新码率
             if (videoSender != null && targetBitrate != currentTargetBitrate) {
                 applyBitrate(targetBitrate);
             }
-            
+
             listener.onStatus("流配置已应用");
         } catch (Exception e) {
             listener.onStatus("应用流配置失败: " + e.getMessage());
@@ -389,16 +398,16 @@ public class WebRTCManager {
     private void applyBitrate(int targetBitrate) {
         try {
             RTCRtpSendParameters params = videoSender.getParameters();
-            
+
             if (params != null && params.encodings != null && !params.encodings.isEmpty()) {
                 for (RTCRtpEncodingParameters encoding : params.encodings) {
                     encoding.maxBitrate = targetBitrate;
                     encoding.minBitrate = Math.max(100000, targetBitrate / 4);
                 }
-                
+
                 videoSender.setParameters(params);
                 currentTargetBitrate = targetBitrate;
-                listener.onStatus("码率已更新: " + (targetBitrate/1000) + "kbps");
+                listener.onStatus("码率已更新: " + (targetBitrate / 1000) + "kbps");
             } else {
                 listener.onStatus("无法获取RTP参数，码率更新失败");
             }
@@ -411,22 +420,32 @@ public class WebRTCManager {
     private void startScreenCapture() {
         try {
             listener.onStatus("启动屏幕捕获...");
-            
+
             // 创建屏幕捕获源
             screenSource = new ScreenCaptureSource();
             listener.onStatus("屏幕捕获源已创建");
-            
+
+            // 如果有待应用的帧率配置，先应用
+            if (hasPendingConfig) {
+                screenSource.updateFrameRate(pendingFrameRate);
+            }
+
             // 创建视频轨道
             VideoTrack videoTrack = factory.createVideoTrack("screen-video", screenSource.getVideoSource());
             listener.onStatus("视频轨道已创建: screen-video");
-            
+
             // 添加到 PeerConnection
             this.videoSender = peerConnection.addTrack(videoTrack, Collections.singletonList("stream-id"));
             listener.onStatus("视频轨道已添加到 PeerConnection, sender: " + videoSender);
-            
+
+            // 如果有待应用的码率配置，应用
+            if (hasPendingConfig && pendingBitrate != currentTargetBitrate) {
+                applyBitrate(pendingBitrate);
+            }
+
             // 开始捕获
             screenSource.start();
-            
+
             listener.onStatus("屏幕捕获已启动");
         } catch (Exception e) {
             listener.onStatus("启动屏幕捕获失败: " + e.getMessage());
@@ -444,12 +463,12 @@ public class WebRTCManager {
                 msg.put("kind", "chat");
                 msg.put("sender", senderName != null && !senderName.isEmpty() ? senderName : "Agent");
                 msg.put("text", text);
-                
+
                 String json = mapper.writeValueAsString(msg);
                 byte[] data = json.getBytes(StandardCharsets.UTF_8);
                 java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(data);
                 dataChannel.send(new RTCDataChannelBuffer(buffer, false));
-                
+
                 listener.onStatus("已发送消息: " + text);
             } catch (Exception e) {
                 listener.onStatus("发送聊天消息失败: " + e.getMessage());
@@ -458,18 +477,18 @@ public class WebRTCManager {
             listener.onStatus("DataChannel 未就绪，无法发送消息");
         }
     }
-    
+
     /**
      * 只清理RTC连接，保留Factory以便快速重建（用于peer-left场景）
      */
     public void cleanupRtcOnly() {
         listener.onStatus("清理RTC连接，保持就绪状态...");
-        
+
         // 通知聊天禁用
         if (chatListener != null) {
             chatListener.onDataChannelStateChange(false);
         }
-        
+
         // 1. 关闭 DataChannel
         if (dataChannel != null) {
             try {
@@ -480,7 +499,7 @@ public class WebRTCManager {
                 dataChannel = null;
             }
         }
-        
+
         // 2. 停止屏幕捕获
         if (screenSource != null) {
             try {
@@ -491,10 +510,10 @@ public class WebRTCManager {
                 screenSource = null;
             }
         }
-        
+
         // 清理 videoSender 引用
         videoSender = null;
-        
+
         // 3. 关闭 PeerConnection
         if (peerConnection != null) {
             try {
@@ -505,13 +524,13 @@ public class WebRTCManager {
                 peerConnection = null;
             }
         }
-        
+
         // 4. 重新创建 PeerConnection 准备下一次连接
         reinitPeerConnection();
-        
+
         listener.onStatus("已就绪，等待新连接...");
     }
-    
+
     /**
      * 重新初始化 PeerConnection（保留Factory）
      */
@@ -522,10 +541,10 @@ public class WebRTCManager {
                 init();
                 return;
             }
-            
+
             // 配置 ICE 服务器
             List<RTCIceServer> iceServers = new ArrayList<>();
-            
+
             if (stunUrls != null) {
                 for (String url : stunUrls) {
                     if (url != null && !url.trim().isEmpty()) {
@@ -535,7 +554,7 @@ public class WebRTCManager {
                     }
                 }
             }
-            
+
             if (turnUrls != null) {
                 for (String url : turnUrls) {
                     if (url != null && !url.trim().isEmpty()) {
@@ -547,23 +566,23 @@ public class WebRTCManager {
                     }
                 }
             }
-            
+
             RTCConfiguration config = new RTCConfiguration();
             config.iceServers = iceServers;
             config.iceTransportPolicy = RTCIceTransportPolicy.ALL;
             config.bundlePolicy = RTCBundlePolicy.BALANCED;
             config.rtcpMuxPolicy = RTCRtcpMuxPolicy.REQUIRE;
-            
+
             // 创建新的 PeerConnection
             peerConnection = factory.createPeerConnection(config, createPeerConnectionObserver());
-            
+
             listener.onStatus("PeerConnection 已重建");
         } catch (Exception e) {
             listener.onStatus("重建 PeerConnection 失败: " + e.getMessage());
             e.printStackTrace();
         }
     }
-    
+
     /**
      * 创建 PeerConnection 观察者
      */
@@ -577,10 +596,10 @@ public class WebRTCManager {
                     candidateJson.put("candidate", candidate.sdp);
                     candidateJson.put("sdpMid", candidate.sdpMid);
                     candidateJson.put("sdpMLineIndex", candidate.sdpMLineIndex);
-                    
+
                     ObjectNode data = mapper.createObjectNode();
                     data.set("candidate", candidateJson);
-                    
+
                     client.sendSignal("candidate", data);
                 } catch (Exception e) {
                     listener.onStatus("发送 ICE 候选失败: " + e.getMessage());
@@ -595,7 +614,7 @@ public class WebRTCManager {
             @Override
             public void onIceConnectionChange(RTCIceConnectionState state) {
                 listener.onStatus("ICE 连接状态: " + state);
-                
+
                 if (state == RTCIceConnectionState.FAILED) {
                     listener.onStatus("ICE连接失败，尝试重启...");
                     try {
@@ -633,28 +652,28 @@ public class WebRTCManager {
             public void onDataChannel(RTCDataChannel channel) {
                 listener.onStatus("收到数据通道: " + channel.getLabel());
                 dataChannel = channel;
-                
+
                 channel.registerObserver(new RTCDataChannelObserver() {
                     @Override
                     public void onStateChange() {
                         RTCDataChannelState state = channel.getState();
                         listener.onStatus("DataChannel 状态: " + state);
-                        
+
                         if (chatListener != null) {
                             chatListener.onDataChannelStateChange(state == RTCDataChannelState.OPEN);
                         }
                     }
-                    
+
                     @Override
                     public void onMessage(RTCDataChannelBuffer buffer) {
                         try {
                             byte[] data = new byte[buffer.data.remaining()];
                             buffer.data.get(data);
                             String message = new String(data, java.nio.charset.StandardCharsets.UTF_8);
-                            
+
                             JsonNode root = mapper.readTree(message);
                             String kind = root.path("kind").asText("");
-                            
+
                             if ("mouse".equals(kind)) {
                                 controlHandler.handleMouse(root);
                             } else if ("keyboard".equals(kind)) {
@@ -663,7 +682,7 @@ public class WebRTCManager {
                                 String sender = root.path("sender").asText("对方");
                                 String text = root.path("text").asText("");
                                 listener.onStatus("收到消息: " + sender + ": " + text);
-                                
+
                                 if (chatListener != null) {
                                     chatListener.onChatMessage(sender, text);
                                 }
@@ -672,7 +691,7 @@ public class WebRTCManager {
                             listener.onStatus("处理 DataChannel 消息失败: " + e.getMessage());
                         }
                     }
-                    
+
                     @Override
                     public void onBufferedAmountChange(long previousAmount) {
                     }
@@ -695,12 +714,12 @@ public class WebRTCManager {
             }
         };
     }
-    
+
     public void cleanup() {
         listener.onStatus("开始清理 WebRTC 资源...");
-        
+
         // 1. 关闭 DataChannel
-            if (dataChannel != null) {
+        if (dataChannel != null) {
             try {
                 listener.onStatus("关闭 DataChannel...");
                 dataChannel.close();
@@ -711,9 +730,9 @@ public class WebRTCManager {
                 dataChannel = null;
             }
         }
-        
+
         // 2. 停止屏幕捕获
-            if (screenSource != null) {
+        if (screenSource != null) {
             try {
                 listener.onStatus("停止屏幕捕获...");
                 screenSource.stop();
@@ -724,12 +743,12 @@ public class WebRTCManager {
                 screenSource = null;
             }
         }
-        
+
         // 清理 videoSender 引用
         videoSender = null;
-        
+
         // 3. 关闭 PeerConnection
-            if (peerConnection != null) {
+        if (peerConnection != null) {
             try {
                 listener.onStatus("关闭 PeerConnection...");
                 peerConnection.close();
@@ -740,9 +759,9 @@ public class WebRTCManager {
                 peerConnection = null;
             }
         }
-        
+
         // 4. 释放 PeerConnectionFactory
-            if (factory != null) {
+        if (factory != null) {
             try {
                 listener.onStatus("释放 PeerConnectionFactory...");
                 factory.dispose();
@@ -753,7 +772,7 @@ public class WebRTCManager {
                 factory = null;
             }
         }
-        
+
         listener.onStatus("WebRTC 资源清理完成");
     }
 }
