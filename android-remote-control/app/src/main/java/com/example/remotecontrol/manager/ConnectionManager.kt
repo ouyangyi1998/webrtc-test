@@ -207,6 +207,8 @@ object ConnectionManager {
                     WebRTCManager.IceServerConfig(it.url, it.username, it.password)
                 }
                 webRTCManager?.createPeerConnection(iceServers)
+                LogManager.i("主动发起连接 (Offer)")
+                webRTCManager?.createOffer()
             }
             
             "peer-left" -> {
