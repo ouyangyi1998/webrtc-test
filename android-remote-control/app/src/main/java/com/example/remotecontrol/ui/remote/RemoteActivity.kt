@@ -137,10 +137,13 @@ class RemoteActivity : AppCompatActivity() {
 
         // 初始化 SurfaceViewRenderer
         val eglContext = remoteControlManager?.getEglContext()
+        Log.d("RemoteActivity", "setupVideoRenderer: eglContext=$eglContext")
+        
         if (eglContext != null) {
             try {
                 binding.remoteVideoView.init(eglContext, object : RendererCommon.RendererEvents {
                     override fun onFirstFrameRendered() {
+                        Log.d("RemoteActivity", "onFirstFrameRendered")
                         runOnUiThread {
                             // 隐藏等待覆盖层
                             binding.layoutWaiting.visibility = View.GONE
@@ -155,6 +158,7 @@ class RemoteActivity : AppCompatActivity() {
                     }
 
                     override fun onFrameResolutionChanged(width: Int, height: Int, rotation: Int) {
+                        Log.d("RemoteActivity", "onFrameResolutionChanged: ${width}x${height} $rotation")
                         runOnUiThread {
                             // 更新触摸覆盖层的视频尺寸
                             binding.touchOverlay.setVideoSize(width, height)
@@ -165,10 +169,14 @@ class RemoteActivity : AppCompatActivity() {
                 binding.remoteVideoView.setEnableHardwareScaler(true)
             } catch (e: Exception) {
                 // 可能已经初始化过
+                Log.w("RemoteActivity", "SurfaceViewRenderer init failed (maybe already inited): $e")
             }
+        } else {
+             Log.e("RemoteActivity", "EGL Context is null! Cannot init renderer.")
         }
 
         // 添加视频轨道
+        Log.d("RemoteActivity", "Adding sink to track: ${track.id()}")
         track.addSink(binding.remoteVideoView)
         currentVideoTrack = track
     }
