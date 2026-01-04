@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">远程控制</string>
+
+    <!-- Connect Activity -->
+    <string name="server_url_hint">信令服务器地址</string>
+    <string name="server_url_example">例如: ws://192.168.1.100:8080/ws</string>
+    <string name="room_id_hint">房间号</string>
+    <string name="nickname_hint">昵称</string>
+    <string name="btn_connect">连接</string>
+    <string name="btn_disconnect">断开</string>
+    <string name="connecting">连接中...</string>
+    <string name="connected">已连接</string>
+    <string name="disconnected">已断开</string>
+
+    <!-- Remote Activity -->
+    <string name="waiting_video">等待视频流...</string>
+    <string name="connection_failed">连接失败</string>
+    <string name="reconnecting">重连中...</string>
+
+    <!-- Errors -->
+    <string name="error_empty_server">请输入服务器地址</string>
+    <string name="error_empty_room">请输入房间号</string>
+    <string name="error_empty_nickname">请输入昵称</string>
+    <string name="error_connection_failed">连接失败: %s</string>
+
+    <!-- AccessibilityService -->
+    <string name="accessibility_service_label">远程控制服务</string>
+    <string name="accessibility_service_description">允许远程控制设备。启用后，来自 Web 端的鼠标和键盘输入可以控制此设备。</string>
+</resources>

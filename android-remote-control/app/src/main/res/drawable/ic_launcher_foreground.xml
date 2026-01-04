@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Background circle -->
+    <path
+        android:fillColor="#1976D2"
+        android:pathData="M54,54m-50,0a50,50 0,1 1,100 0a50,50 0,1 1,-100 0"/>
+    <!-- Desktop monitor icon -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,35h48c2,0 3,1 3,3v25c0,2 -1,3 -3,3h-48c-2,0 -3,-1 -3,-3v-25c0,-2 1,-3 3,-3z"/>
+    <path
+        android:fillColor="#1976D2"
+        android:pathData="M33,38h42v22h-42z"/>
+    <!-- Stand -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M49,66h10v5h-10z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,71h24c1,0 2,1 2,2v0h-28v0c0,-1 1,-2 2,-2z"/>
+    <!-- Control hand icon -->
+    <path
+        android:fillColor="#FF4081"
+        android:pathData="M54,47m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0"/>
+</vector>
