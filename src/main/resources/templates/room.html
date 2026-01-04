@@ -12,20 +12,43 @@
             background: transparent !important;
         }
         /* 全屏样式 */
-        #videoContainer:fullscreen {
+        #videoContainer:fullscreen,
+        #videoContainer:-webkit-full-screen,
+        #videoContainer:-moz-full-screen,
+        #videoContainer:-ms-fullscreen {
             background: #000;
             display: flex;
             align-items: center;
             justify-content: center;
-        }
-        #videoContainer:fullscreen #remoteVideo {
             width: 100vw;
             height: 100vh;
+        }
+        #videoContainer:fullscreen #remoteVideo,
+        #videoContainer:-webkit-full-screen #remoteVideo,
+        #videoContainer:-moz-full-screen #remoteVideo,
+        #videoContainer:-ms-fullscreen #remoteVideo {
+            width: 100vw;
+            height: 100vh;
+            max-width: 100vw;
+            max-height: 100vh;
             object-fit: contain;
             border-radius: 0;
         }
-        #videoContainer:fullscreen #remoteOverlay {
+        #videoContainer:fullscreen #remoteOverlay,
+        #videoContainer:-webkit-full-screen #remoteOverlay,
+        #videoContainer:-moz-full-screen #remoteOverlay,
+        #videoContainer:-ms-fullscreen #remoteOverlay {
             border-radius: 0;
+        }
+        /* 浮动全屏按钮样式 */
+        #fullscreenBtnFloat {
+            backdrop-filter: blur(4px);
+        }
+        #videoContainer:fullscreen #fullscreenBtnFloat,
+        #videoContainer:-webkit-full-screen #fullscreenBtnFloat,
+        #videoContainer:-moz-full-screen #fullscreenBtnFloat,
+        #videoContainer:-ms-fullscreen #fullscreenBtnFloat {
+            opacity: 1 !important;
         }
     </style>
 </head>
@@ -112,9 +135,16 @@
                         <span>全屏</span>
                     </button>
                 </div>
-                <div id="videoContainer" class="relative">
+                <div id="videoContainer" class="relative group">
                     <video id="remoteVideo" class="w-full bg-black rounded" autoplay playsinline></video>
                     <div id="remoteOverlay" class="absolute inset-0 pointer-events-none border border-cyan-400/60 rounded"></div>
+                    <!-- 浮动全屏按钮 -->
+                    <button id="fullscreenBtnFloat" class="absolute top-2 right-2 px-3 py-2 rounded-lg bg-black/70 hover:bg-black/90 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center gap-2 z-10" title="全屏">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path>
+                        </svg>
+                        <span class="text-sm">全屏</span>
+                    </button>
                 </div>
             </div>
         </div>

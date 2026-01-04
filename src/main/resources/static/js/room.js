@@ -20,6 +20,7 @@
   const currentPacketLoss = document.getElementById("currentPacketLoss");
   const currentLatency = document.getElementById("currentLatency");
   const fullscreenBtn = document.getElementById("fullscreenBtn");
+  const fullscreenBtnFloat = document.getElementById("fullscreenBtnFloat");
   const videoContainer = document.getElementById("videoContainer");
 
   let ws;
@@ -354,14 +355,17 @@
     return servers;
   };
 
+  let iceGatheringTimeout = null;
+  
   const ensurePeer = () => {
     if (pc) return pc;
     const rtcConfig = {
       iceServers: iceServers(),
       iceTransportPolicy: "all",
-      iceCandidatePoolSize: 2,
+      iceCandidatePoolSize: 0, // 改为 0，减少候选收集时间
     };
     pc = new RTCPeerConnection(rtcConfig);
+    
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         sendSignal("candidate", { candidate: e.candidate });
@@ -370,14 +374,47 @@
           log("发现 TURN relay 候选");
         } else if (cand.includes("typ srflx")) {
           log("发现 STUN srflx 候选");
+        } else if (cand.includes("typ host")) {
+          log("发现本地候选");
+        }
+      } else {
+        // e.candidate 为 null 表示候选收集完成
+        log("ICE 候选收集完成");
+        if (iceGatheringTimeout) {
+          clearTimeout(iceGatheringTimeout);
+          iceGatheringTimeout = null;
         }
       }
     };
+    
     pc.onicecandidateerror = (e) => {
       log(`ICE candidate error: ${e.errorText || e.message || "unknown"}`);
     };
+    
     pc.onicegatheringstatechange = () => {
       log(`ICE gathering state: ${pc.iceGatheringState}`);
+      
+      // 当开始收集候选时，设置超时
+      if (pc.iceGatheringState === 'gathering') {
+        // 清除之前的超时
+        if (iceGatheringTimeout) {
+          clearTimeout(iceGatheringTimeout);
+        }
+        
+        // 设置 3 秒超时，如果还在 gathering 状态则强制继续
+        iceGatheringTimeout = setTimeout(() => {
+          if (pc && pc.iceGatheringState === 'gathering') {
+            log("警告: ICE 候选收集超时（3秒），继续连接...");
+            // 不需要做特殊处理，WebRTC 会继续使用已收集的候选
+          }
+          iceGatheringTimeout = null;
+        }, 3000);
+      } else if (pc.iceGatheringState === 'complete') {
+        if (iceGatheringTimeout) {
+          clearTimeout(iceGatheringTimeout);
+          iceGatheringTimeout = null;
+        }
+      }
     };
     pc.oniceconnectionstatechange = () => {
       log(`ICE连接状态: ${pc.iceConnectionState}`);
@@ -1090,37 +1127,51 @@
   bindMouseEvents();
 
   // ===== 全屏功能 =====
-  const toggleFullscreen = async () => {
-    if (!videoContainer) return;
+  const toggleFullscreen = () => {
+    const container = document.getElementById("videoContainer");
+    if (!container) {
+      log("错误: videoContainer 元素不存在");
+      console.error("videoContainer element not found");
+      return;
+    }
 
     try {
-      // 检查是否已经全屏
-      const isFullscreen = document.fullscreenElement === videoContainer ||
-                           document.webkitFullscreenElement === videoContainer ||
-                           document.mozFullScreenElement === videoContainer ||
-                           document.msFullscreenElement === videoContainer;
+      // 检查是否已经全屏（兼容所有浏览器）
+      const isFullscreen = !!(document.fullscreenElement || 
+                              document.webkitFullscreenElement || 
+                              document.mozFullScreenElement || 
+                              document.msFullscreenElement);
 
       if (isFullscreen) {
         // 退出全屏
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        } else if (document.webkitExitFullscreen) {
-          await document.webkitExitFullscreen();
-        } else if (document.mozCancelFullScreen) {
-          await document.mozCancelFullScreen();
-        } else if (document.msExitFullscreen) {
-          await document.msExitFullscreen();
+        const exitPromise = document.exitFullscreen ? document.exitFullscreen() :
+                           document.webkitExitFullscreen ? document.webkitExitFullscreen() :
+                           document.mozCancelFullScreen ? document.mozCancelFullScreen() :
+                           document.msExitFullscreen ? document.msExitFullscreen() : null;
+        
+        if (exitPromise) {
+          exitPromise.then(() => {
+            log("已退出全屏");
+          }).catch(err => {
+            log(`退出全屏失败: ${err.message}`);
+          });
         }
       } else {
         // 进入全屏
-        if (videoContainer.requestFullscreen) {
-          await videoContainer.requestFullscreen();
-        } else if (videoContainer.webkitRequestFullscreen) {
-          await videoContainer.webkitRequestFullscreen();
-        } else if (videoContainer.mozRequestFullScreen) {
-          await videoContainer.mozRequestFullScreen();
-        } else if (videoContainer.msRequestFullscreen) {
-          await videoContainer.msRequestFullscreen();
+        const requestPromise = container.requestFullscreen ? container.requestFullscreen() :
+                              container.webkitRequestFullscreen ? container.webkitRequestFullscreen() :
+                              container.mozRequestFullScreen ? container.mozRequestFullScreen() :
+                              container.msRequestFullscreen ? container.msRequestFullscreen() : null;
+        
+        if (requestPromise) {
+          requestPromise.then(() => {
+            log("已进入全屏");
+          }).catch(err => {
+            log(`进入全屏失败: ${err.message}`);
+            console.error("Fullscreen error:", err);
+          });
+        } else {
+          log("错误: 浏览器不支持全屏 API");
         }
       }
     } catch (error) {
@@ -1130,35 +1181,58 @@
   };
 
   const updateFullscreenButton = () => {
-    if (!fullscreenBtn) return;
-    const isFullscreen = document.fullscreenElement === videoContainer ||
-                         document.webkitFullscreenElement === videoContainer ||
-                         document.mozFullScreenElement === videoContainer ||
-                         document.msFullscreenElement === videoContainer;
+    const isFullscreen = !!(document.fullscreenElement === videoContainer ||
+                            document.webkitFullscreenElement === videoContainer ||
+                            document.mozFullScreenElement === videoContainer ||
+                            document.msFullscreenElement === videoContainer);
 
-    const icon = fullscreenBtn.querySelector('svg path');
-    const text = fullscreenBtn.querySelector('span');
+    // 更新顶部按钮
+    if (fullscreenBtn) {
+      const icon = fullscreenBtn.querySelector('svg path');
+      const text = fullscreenBtn.querySelector('span');
+      
+      if (isFullscreen) {
+        if (icon) {
+          icon.setAttribute('d', 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3');
+        }
+        if (text) text.textContent = '退出全屏';
+        fullscreenBtn.title = '退出全屏';
+      } else {
+        if (icon) {
+          icon.setAttribute('d', 'M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4');
+        }
+        if (text) text.textContent = '全屏';
+        fullscreenBtn.title = '全屏';
+      }
+    }
 
-    if (isFullscreen) {
-      // 显示退出全屏图标
-      if (icon) {
-        icon.setAttribute('d', 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3');
+    // 更新浮动按钮
+    if (fullscreenBtnFloat) {
+      const icon = fullscreenBtnFloat.querySelector('svg path');
+      const text = fullscreenBtnFloat.querySelector('span');
+      
+      if (isFullscreen) {
+        if (icon) {
+          icon.setAttribute('d', 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3');
+        }
+        if (text) text.textContent = '退出全屏';
+        fullscreenBtnFloat.title = '退出全屏';
+      } else {
+        if (icon) {
+          icon.setAttribute('d', 'M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4');
+        }
+        if (text) text.textContent = '全屏';
+        fullscreenBtnFloat.title = '全屏';
       }
-      if (text) text.textContent = '退出全屏';
-      fullscreenBtn.title = '退出全屏';
-    } else {
-      // 显示进入全屏图标
-      if (icon) {
-        icon.setAttribute('d', 'M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4');
-      }
-      if (text) text.textContent = '全屏';
-      fullscreenBtn.title = '全屏';
     }
   };
 
   // 全屏按钮事件
   if (fullscreenBtn) {
     fullscreenBtn.addEventListener('click', toggleFullscreen);
+  }
+  if (fullscreenBtnFloat) {
+    fullscreenBtnFloat.addEventListener('click', toggleFullscreen);
   }
 
   // 监听全屏状态变化

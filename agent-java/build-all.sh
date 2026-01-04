@@ -4,9 +4,62 @@
 
 set -e
 
-# 设置 JAVA_HOME（使用系统默认的 Java）
-export JAVA_HOME="${JAVA_HOME:-/Users/ouyangyi/Library/Java/JavaVirtualMachines/azul-17.0.13/Contents/Home}"
+# 自动检测并设置 JAVA_HOME
+if [ -z "$JAVA_HOME" ]; then
+    # 方法1: 使用 /usr/libexec/java_home (macOS)
+    if [ -x /usr/libexec/java_home ]; then
+        JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || /usr/libexec/java_home 2>/dev/null)
+    fi
+    
+    # 方法2: 从 java 命令路径推断
+    if [ -z "$JAVA_HOME" ]; then
+        JAVA_CMD=$(which java 2>/dev/null)
+        if [ -n "$JAVA_CMD" ]; then
+            # 从 /path/to/java 推断为 /path/to/../Home
+            JAVA_HOME=$(dirname "$(dirname "$JAVA_CMD")")
+            # 验证是否是有效的 JAVA_HOME
+            if [ ! -f "$JAVA_HOME/bin/java" ]; then
+                JAVA_HOME=""
+            fi
+        fi
+    fi
+    
+    # 方法3: 常见安装路径
+    if [ -z "$JAVA_HOME" ]; then
+        for path in \
+            "$HOME/Library/Java/JavaVirtualMachines"/*/Contents/Home \
+            "/Library/Java/JavaVirtualMachines"/*/Contents/Home \
+            "/System/Library/Java/JavaVirtualMachines"/*/Contents/Home
+        do
+            if [ -d "$path" ] && [ -f "$path/bin/java" ]; then
+                # 优先选择 Java 17
+                JAVA_VERSION=$("$path/bin/java" -version 2>&1 | head -1 | grep -oE "version \"17" || echo "")
+                if [ -n "$JAVA_VERSION" ]; then
+                    JAVA_HOME="$path"
+                    break
+                elif [ -z "$JAVA_HOME" ]; then
+                    # 如果没有找到 17，先保存第一个找到的
+                    JAVA_HOME="$path"
+                fi
+            fi
+        done
+    fi
+fi
+
+# 验证 JAVA_HOME
+if [ -z "$JAVA_HOME" ] || [ ! -f "$JAVA_HOME/bin/java" ]; then
+    echo "错误: 无法自动检测 JAVA_HOME，请手动设置："
+    echo "  export JAVA_HOME=/path/to/java/home"
+    echo "  或运行: /usr/libexec/java_home -V 查看已安装的 Java 版本"
+    exit 1
+fi
+
+export JAVA_HOME
 export PATH="$JAVA_HOME/bin:$PATH"
+
+# 显示使用的 Java 版本
+echo "使用 Java: $JAVA_HOME"
+"$JAVA_HOME/bin/java" -version 2>&1 | head -1
 
 # Maven 路径
 MVN="/Applications/IntelliJ IDEA.app/Contents/plugins/maven/lib/maven3/bin/mvn"
