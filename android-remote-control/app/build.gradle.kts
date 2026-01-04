@@ -52,7 +52,8 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.8.2")
 
     // WebRTC
-    implementation("org.webrtc:google-webrtc:1.0.32006")
+    // WebRTC
+    implementation("com.infobip:google-webrtc:1.0.32006")
 
     // WebSocket (OkHttp)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
