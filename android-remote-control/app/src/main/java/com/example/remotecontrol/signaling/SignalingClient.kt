@@ -57,6 +57,8 @@ class SignalingClient(
         val request = Request.Builder()
             .url(serverUrl)
             .build()
+            
+        Log.d(TAG, "Connecting to WebSocket URL: $serverUrl")
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
