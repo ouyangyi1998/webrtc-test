@@ -1129,54 +1129,117 @@
   // ===== 全屏功能 =====
   const toggleFullscreen = () => {
     const container = document.getElementById("videoContainer");
+    
+    // 详细日志
+    log("点击全屏按钮");
+    console.log("videoContainer:", container);
+    
     if (!container) {
       log("错误: videoContainer 元素不存在");
       console.error("videoContainer element not found");
       return;
     }
 
+    // 检查全屏 API 支持
+    const supportsFullscreen = !!(
+      document.fullscreenEnabled ||
+      document.webkitFullscreenEnabled ||
+      document.mozFullScreenEnabled ||
+      document.msFullscreenEnabled
+    );
+    
+    log(`浏览器全屏支持: ${supportsFullscreen}`);
+    console.log("Fullscreen API support:", {
+      fullscreenEnabled: document.fullscreenEnabled,
+      webkitFullscreenEnabled: document.webkitFullscreenEnabled,
+      mozFullScreenEnabled: document.mozFullScreenEnabled,
+      msFullscreenEnabled: document.msFullscreenEnabled,
+      containerMethods: {
+        requestFullscreen: !!container.requestFullscreen,
+        webkitRequestFullscreen: !!container.webkitRequestFullscreen,
+        mozRequestFullScreen: !!container.mozRequestFullScreen,
+        msRequestFullscreen: !!container.msRequestFullscreen
+      }
+    });
+
+    if (!supportsFullscreen) {
+      log("错误: 浏览器不支持全屏 API");
+      alert("当前浏览器不支持全屏功能");
+      return;
+    }
+
     try {
-      // 检查是否已经全屏（兼容所有浏览器）
+      // 检查是否已经全屏
       const isFullscreen = !!(document.fullscreenElement || 
                               document.webkitFullscreenElement || 
                               document.mozFullScreenElement || 
                               document.msFullscreenElement);
 
+      log(`当前全屏状态: ${isFullscreen}`);
+
       if (isFullscreen) {
         // 退出全屏
-        const exitPromise = document.exitFullscreen ? document.exitFullscreen() :
-                           document.webkitExitFullscreen ? document.webkitExitFullscreen() :
-                           document.mozCancelFullScreen ? document.mozCancelFullScreen() :
-                           document.msExitFullscreen ? document.msExitFullscreen() : null;
-        
-        if (exitPromise) {
-          exitPromise.then(() => {
-            log("已退出全屏");
-          }).catch(err => {
-            log(`退出全屏失败: ${err.message}`);
-          });
+        log("尝试退出全屏...");
+        if (document.exitFullscreen) {
+          document.exitFullscreen().then(() => log("已退出全屏")).catch(err => log(`退出失败: ${err.message}`));
+        } else if (document.webkitExitFullscreen) {
+          document.webkitExitFullscreen();
+          log("已退出全屏(webkit)");
+        } else if (document.mozCancelFullScreen) {
+          document.mozCancelFullScreen();
+          log("已退出全屏(moz)");
+        } else if (document.msExitFullscreen) {
+          document.msExitFullscreen();
+          log("已退出全屏(ms)");
         }
       } else {
         // 进入全屏
-        const requestPromise = container.requestFullscreen ? container.requestFullscreen() :
-                              container.webkitRequestFullscreen ? container.webkitRequestFullscreen() :
-                              container.mozRequestFullScreen ? container.mozRequestFullScreen() :
-                              container.msRequestFullscreen ? container.msRequestFullscreen() : null;
+        log("尝试进入全屏...");
         
-        if (requestPromise) {
-          requestPromise.then(() => {
+        // 尝试容器全屏
+        let fullscreenPromise = null;
+        if (container.requestFullscreen) {
+          fullscreenPromise = container.requestFullscreen();
+        } else if (container.webkitRequestFullscreen) {
+          fullscreenPromise = container.webkitRequestFullscreen();
+        } else if (container.mozRequestFullScreen) {
+          fullscreenPromise = container.mozRequestFullScreen();
+        } else if (container.msRequestFullscreen) {
+          fullscreenPromise = container.msRequestFullscreen();
+        }
+        
+        if (fullscreenPromise) {
+          fullscreenPromise.then(() => {
             log("已进入全屏");
           }).catch(err => {
-            log(`进入全屏失败: ${err.message}`);
-            console.error("Fullscreen error:", err);
+            log(`容器全屏失败: ${err.message}，尝试视频全屏...`);
+            console.error("Container fullscreen error:", err);
+            
+            // 如果容器全屏失败，尝试视频元素全屏
+            const video = document.getElementById("remoteVideo");
+            if (video) {
+              if (video.requestFullscreen) {
+                video.requestFullscreen().then(() => log("视频已进入全屏")).catch(e => log(`视频全屏也失败: ${e.message}`));
+              } else if (video.webkitRequestFullscreen) {
+                video.webkitRequestFullscreen();
+                log("视频已进入全屏(webkit)");
+              } else if (video.mozRequestFullScreen) {
+                video.mozRequestFullScreen();
+                log("视频已进入全屏(moz)");
+              } else if (video.webkitEnterFullscreen) {
+                // iOS Safari 特殊方法
+                video.webkitEnterFullscreen();
+                log("视频已进入全屏(iOS)");
+              }
+            }
           });
         } else {
-          log("错误: 浏览器不支持全屏 API");
+          log("错误: 找不到全屏方法");
         }
       }
     } catch (error) {
-      log(`全屏操作失败: ${error.message}`);
-      console.error("Fullscreen error:", error);
+      log(`全屏操作异常: ${error.message}`);
+      console.error("Fullscreen exception:", error);
     }
   };
 
