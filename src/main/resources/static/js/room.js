@@ -19,6 +19,8 @@
   const currentBitrate = document.getElementById("currentBitrate");
   const currentPacketLoss = document.getElementById("currentPacketLoss");
   const currentLatency = document.getElementById("currentLatency");
+  const fullscreenBtn = document.getElementById("fullscreenBtn");
+  const videoContainer = document.getElementById("videoContainer");
 
   let ws;
   let pc;
@@ -1086,5 +1088,119 @@
   applyDisplayStyles();
   window.addEventListener("resize", () => applyDisplayStyles());
   bindMouseEvents();
+
+  // ===== 全屏功能 =====
+  const toggleFullscreen = async () => {
+    if (!videoContainer) return;
+
+    try {
+      // 检查是否已经全屏
+      const isFullscreen = document.fullscreenElement === videoContainer ||
+                           document.webkitFullscreenElement === videoContainer ||
+                           document.mozFullScreenElement === videoContainer ||
+                           document.msFullscreenElement === videoContainer;
+
+      if (isFullscreen) {
+        // 退出全屏
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          await document.webkitExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+          await document.mozCancelFullScreen();
+        } else if (document.msExitFullscreen) {
+          await document.msExitFullscreen();
+        }
+      } else {
+        // 进入全屏
+        if (videoContainer.requestFullscreen) {
+          await videoContainer.requestFullscreen();
+        } else if (videoContainer.webkitRequestFullscreen) {
+          await videoContainer.webkitRequestFullscreen();
+        } else if (videoContainer.mozRequestFullScreen) {
+          await videoContainer.mozRequestFullScreen();
+        } else if (videoContainer.msRequestFullscreen) {
+          await videoContainer.msRequestFullscreen();
+        }
+      }
+    } catch (error) {
+      log(`全屏操作失败: ${error.message}`);
+      console.error("Fullscreen error:", error);
+    }
+  };
+
+  const updateFullscreenButton = () => {
+    if (!fullscreenBtn) return;
+    const isFullscreen = document.fullscreenElement === videoContainer ||
+                         document.webkitFullscreenElement === videoContainer ||
+                         document.mozFullScreenElement === videoContainer ||
+                         document.msFullscreenElement === videoContainer;
+
+    const icon = fullscreenBtn.querySelector('svg path');
+    const text = fullscreenBtn.querySelector('span');
+
+    if (isFullscreen) {
+      // 显示退出全屏图标
+      if (icon) {
+        icon.setAttribute('d', 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3');
+      }
+      if (text) text.textContent = '退出全屏';
+      fullscreenBtn.title = '退出全屏';
+    } else {
+      // 显示进入全屏图标
+      if (icon) {
+        icon.setAttribute('d', 'M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4');
+      }
+      if (text) text.textContent = '全屏';
+      fullscreenBtn.title = '全屏';
+    }
+  };
+
+  // 全屏按钮事件
+  if (fullscreenBtn) {
+    fullscreenBtn.addEventListener('click', toggleFullscreen);
+  }
+
+  // 监听全屏状态变化
+  document.addEventListener('fullscreenchange', updateFullscreenButton);
+  document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+  document.addEventListener('mozfullscreenchange', updateFullscreenButton);
+  document.addEventListener('MSFullscreenChange', updateFullscreenButton);
+
+  // 双击视频（按住 Shift 键）进入/退出全屏，避免与鼠标控制冲突
+  if (remoteVideo) {
+    remoteVideo.addEventListener('dblclick', (e) => {
+      // 按住 Shift 键双击时进入/退出全屏
+      if (e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleFullscreen();
+        return;
+      }
+      // 否则正常处理鼠标双击事件（已经在 bindMouseEvents 中处理）
+    });
+  }
+
+  // 键盘快捷键：F11 或 F 键进入/退出全屏
+  document.addEventListener('keydown', (e) => {
+    // F11 键：全屏（需要阻止浏览器默认行为）
+    if (e.key === 'F11') {
+      e.preventDefault();
+      toggleFullscreen();
+    }
+    // F 键：全屏（需要在非输入框状态下）
+    else if (e.key === 'f' || e.key === 'F') {
+      const activeElement = document.activeElement;
+      const isInput = activeElement && (
+        activeElement.tagName === 'INPUT' ||
+        activeElement.tagName === 'TEXTAREA' ||
+        activeElement.contentEditable === 'true'
+      );
+      if (!isInput) {
+        e.preventDefault();
+        toggleFullscreen();
+      }
+    }
+  });
 
 })(); 

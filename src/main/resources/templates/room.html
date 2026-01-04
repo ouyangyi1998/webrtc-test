@@ -11,6 +11,22 @@
             pointer-events: none !important;
             background: transparent !important;
         }
+        /* 全屏样式 */
+        #videoContainer:fullscreen {
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #videoContainer:fullscreen #remoteVideo {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            border-radius: 0;
+        }
+        #videoContainer:fullscreen #remoteOverlay {
+            border-radius: 0;
+        }
     </style>
 </head>
 <body class="bg-slate-900 text-slate-50 min-h-screen">
@@ -87,8 +103,16 @@
                 </div>
             </div>
             <div class="space-y-2">
-                <p class="text-sm text-slate-300">远端流</p>
-                <div class="relative">
+                <div class="flex justify-between items-center">
+                    <p class="text-sm text-slate-300">远端流</p>
+                    <button id="fullscreenBtn" class="px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-sm flex items-center gap-2" title="全屏">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path>
+                        </svg>
+                        <span>全屏</span>
+                    </button>
+                </div>
+                <div id="videoContainer" class="relative">
                     <video id="remoteVideo" class="w-full bg-black rounded" autoplay playsinline></video>
                     <div id="remoteOverlay" class="absolute inset-0 pointer-events-none border border-cyan-400/60 rounded"></div>
                 </div>
