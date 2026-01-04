@@ -187,6 +187,16 @@ object ConnectionManager {
                 LogManager.i("加入房间成功，在线人数: $participants")
                 updateState(State.SIGNALING_CONNECTED)
                 updateStatus(overallStatus = "等待控制端连接...")
+                
+                if (participants > 1) {
+                    val config = configManager ?: return
+                    LogManager.i("房间已有成员，主动发起连接")
+                    val iceServers = config.getIceServers().map { 
+                        WebRTCManager.IceServerConfig(it.url, it.username, it.password)
+                    }
+                    webRTCManager?.createPeerConnection(iceServers)
+                    webRTCManager?.createOffer()
+                }
             }
             
             "peer-joined" -> {
