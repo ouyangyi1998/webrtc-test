@@ -34,6 +34,17 @@
   let reconnectTimer;
   let connecting = false;
   let manualLeave = false;
+  
+  // ICE 重连相关
+  let iceDisconnectTimer = null;  // ICE disconnected 状态恢复超时
+  let iceRestartAttempts = 0;     // ICE 重启尝试次数
+  const MAX_ICE_RESTART_ATTEMPTS = 3;  // 最大重启次数
+  
+  // WebSocket 心跳相关
+  let heartbeatTimer = null;
+  let heartbeatTimeout = null;
+  const HEARTBEAT_INTERVAL = 30000;  // 30秒发送一次心跳
+  const HEARTBEAT_TIMEOUT = 10000;   // 10秒内没有响应则认为断开
 
   // 视频流控制相关
   let statsMonitor = null;
@@ -355,6 +366,135 @@
     return servers;
   };
 
+  // STUN/TURN 服务器连接检测
+  const testIceServer = async (serverConfig, timeout = 5000) => {
+    return new Promise((resolve) => {
+      const testPc = new RTCPeerConnection({
+        iceServers: [serverConfig],
+        iceTransportPolicy: "all",
+      });
+
+      const timeoutId = setTimeout(() => {
+        testPc.close();
+        resolve({ available: false, error: "超时" });
+      }, timeout);
+
+      let foundCandidate = false;
+      let foundRelay = false;
+      let foundSrflx = false;
+
+      testPc.onicecandidate = (e) => {
+        if (e.candidate) {
+          foundCandidate = true;
+          const cand = e.candidate.candidate || "";
+          if (cand.includes("typ relay")) {
+            foundRelay = true;
+          } else if (cand.includes("typ srflx")) {
+            foundSrflx = true;
+          }
+        } else {
+          // 候选收集完成
+          clearTimeout(timeoutId);
+          testPc.close();
+          resolve({
+            available: foundCandidate,
+            hasRelay: foundRelay,
+            hasSrflx: foundSrflx,
+          });
+        }
+      };
+
+      testPc.onicecandidateerror = (e) => {
+        clearTimeout(timeoutId);
+        testPc.close();
+        resolve({
+          available: false,
+          error: e.errorText || e.message || "未知错误",
+        });
+      };
+
+      testPc.onicegatheringstatechange = () => {
+        if (testPc.iceGatheringState === 'complete' && !foundCandidate) {
+          clearTimeout(timeoutId);
+          testPc.close();
+          resolve({ available: false, error: "未收集到候选" });
+        }
+      };
+
+      // 创建一个数据通道以触发候选收集
+      testPc.createDataChannel("test");
+      testPc.createOffer().then(offer => {
+        testPc.setLocalDescription(offer);
+      }).catch(err => {
+        clearTimeout(timeoutId);
+        testPc.close();
+        resolve({ available: false, error: err.message });
+      });
+    });
+  };
+
+  // 检测所有 STUN/TURN 服务器
+  const testIceServers = async () => {
+    log("开始检测 STUN/TURN 服务器连接...");
+    const servers = [];
+    const results = [];
+
+    // 添加配置的 STUN 服务器
+    if (Array.isArray(SIGNAL_CONFIG.stunServers)) {
+      SIGNAL_CONFIG.stunServers.forEach((u, index) => {
+        if (u) servers.push({ urls: u, name: `STUN ${index + 1}` });
+      });
+    }
+
+    // 添加配置的 TURN 服务器
+    if (Array.isArray(SIGNAL_CONFIG.turnServers) && SIGNAL_CONFIG.turnServers.length > 0) {
+      SIGNAL_CONFIG.turnServers.forEach((u, index) => {
+        if (u) {
+          servers.push({
+            urls: u,
+            username: SIGNAL_CONFIG.turnUsername,
+            credential: SIGNAL_CONFIG.turnPassword,
+            name: `TURN ${index + 1}`,
+          });
+        }
+      });
+    }
+
+    // 如果没有配置任何服务器，跳过检测
+    if (servers.length === 0) {
+      log("未配置 STUN/TURN 服务器，跳过检测");
+      return [];
+    }
+
+    // 逐个检测服务器
+    for (const server of servers) {
+      const serverName = server.name || server.urls;
+      log(`检测 ${serverName} (${server.urls})...`);
+      
+      const result = await testIceServer(server, 5000);
+      results.push({ server: serverName, url: server.urls, ...result });
+      
+      if (result.available) {
+        const details = [];
+        if (result.hasRelay) details.push("TURN relay");
+        if (result.hasSrflx) details.push("STUN srflx");
+        log(`✓ ${serverName} 可用${details.length > 0 ? ' (' + details.join(', ') + ')' : ''}`);
+      } else {
+        log(`✗ ${serverName} 不可用${result.error ? ': ' + result.error : ''}`);
+      }
+      
+      // 每个服务器检测之间稍作延迟
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    // 统计结果
+    const availableCount = results.filter(r => r.available).length;
+    const totalCount = results.length;
+    log(`服务器检测完成: ${availableCount}/${totalCount} 可用`);
+
+    return results;
+  };
+
   let iceGatheringTimeout = null;
   
   const ensurePeer = () => {
@@ -388,7 +528,26 @@
     };
     
     pc.onicecandidateerror = (e) => {
-      log(`ICE candidate error: ${e.errorText || e.message || "unknown"}`);
+      const errorMsg = e.errorText || e.message || e.errorCode || "unknown";
+      log(`ICE candidate error: ${errorMsg}`);
+      
+      // 详细的错误信息
+      if (errorMsg.includes("STUN") || errorMsg.includes("stun")) {
+        log("  → STUN 服务器可能不可用或网络问题");
+      } else if (errorMsg.includes("TURN") || errorMsg.includes("turn")) {
+        log("  → TURN 服务器可能不可用、认证失败或网络问题");
+      } else if (errorMsg.includes("timeout") || errorMsg.includes("超时")) {
+        log("  → 服务器响应超时，请检查网络连接");
+      }
+      
+      console.error("ICE candidate error details:", {
+        errorText: e.errorText,
+        errorCode: e.errorCode,
+        errorType: e.errorType,
+        url: e.url,
+        address: e.address,
+        port: e.port,
+      });
     };
     
     pc.onicegatheringstatechange = () => {
@@ -418,11 +577,41 @@
     };
     pc.oniceconnectionstatechange = () => {
       log(`ICE连接状态: ${pc.iceConnectionState}`);
-      if (pc.iceConnectionState === "failed") {
-        log("ICE 失败，尝试 restartIce()");
-        pc.restartIce();
+      
+      // 清除之前的 disconnected 恢复超时
+      if (iceDisconnectTimer) {
+        clearTimeout(iceDisconnectTimer);
+        iceDisconnectTimer = null;
       }
+      
+      // 处理 disconnected 状态（弱网临时断开）
+      if (pc.iceConnectionState === "disconnected") {
+        log("ICE 连接暂时断开，等待恢复...");
+        connState.textContent = "连接恢复中...";
+        
+        // 如果不是手动断开，设置 5 秒超时尝试恢复
+        if (!manualLeave) {
+          iceDisconnectTimer = setTimeout(() => {
+            if (pc && pc.iceConnectionState === "disconnected") {
+              log("ICE 连接未恢复，尝试重启...");
+              tryIceRestart();
+            }
+          }, 5000);
+        }
+      }
+      
+      // 处理 failed 状态
+      if (pc.iceConnectionState === "failed") {
+        log("ICE 连接失败");
+        if (!manualLeave) {
+          tryIceRestart();
+        }
+      }
+      
+      // 连接成功
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        // 重置重启计数
+        iceRestartAttempts = 0;
         logSelectedCandidate();
 
         // 启动网络统计监控
@@ -605,6 +794,9 @@
       connecting = false;
       log("WebSocket 已连接");
       ws.send(JSON.stringify({ type: "join", roomId, sender }));
+      
+      // 启动心跳检测
+      startHeartbeat();
     };
     ws.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
@@ -649,6 +841,13 @@
         case "error":
           alert(msg.data?.message || "错误");
           break;
+        case "pong":
+          // 收到心跳响应，清除超时定时器
+          if (heartbeatTimeout) {
+            clearTimeout(heartbeatTimeout);
+            heartbeatTimeout = null;
+          }
+          break;
         default:
           break;
       }
@@ -657,6 +856,10 @@
       log("WebSocket 已关闭");
       connecting = false;
       connState.textContent = "信令已断开";
+      
+      // 停止心跳
+      stopHeartbeat();
+      
       teardownRtc(true);
       if (!manualLeave && isJoined) {
         scheduleReconnect();
@@ -1027,7 +1230,54 @@
     log("鼠标事件绑定完成");
   };
 
+  // ICE 重启函数（带重新协商）
+  const tryIceRestart = async () => {
+    if (manualLeave) {
+      log("手动断开，不进行 ICE 重启");
+      return;
+    }
+    
+    if (!pc) {
+      log("PeerConnection 不存在，无法重启 ICE");
+      return;
+    }
+    
+    iceRestartAttempts++;
+    
+    if (iceRestartAttempts > MAX_ICE_RESTART_ATTEMPTS) {
+      log(`ICE 重启失败次数过多（${MAX_ICE_RESTART_ATTEMPTS}次），放弃重试`);
+      connState.textContent = "连接失败";
+      // 可以选择重新建立整个连接
+      return;
+    }
+    
+    log(`尝试 ICE 重启（第 ${iceRestartAttempts} 次）...`);
+    connState.textContent = `重连中（${iceRestartAttempts}/${MAX_ICE_RESTART_ATTEMPTS}）`;
+    
+    try {
+      pc.restartIce();
+      
+      // 如果是发起方，重新创建带 iceRestart 选项的 offer
+      if (isInitiator) {
+        log("作为发起方，创建新的 offer（iceRestart）");
+        const offer = await pc.createOffer({ iceRestart: true });
+        await pc.setLocalDescription(offer);
+        sendSignal("offer", { sdp: offer });
+      }
+    } catch (err) {
+      log(`ICE 重启失败: ${err.message}`);
+      console.error("ICE restart error:", err);
+    }
+  };
+
   const teardownRtc = (keepLocalStream = false) => {
+    // 清理 ICE 相关定时器
+    if (iceDisconnectTimer) {
+      clearTimeout(iceDisconnectTimer);
+      iceDisconnectTimer = null;
+    }
+    iceRestartAttempts = 0;
+    
     // 清理网络统计监控器
     if (statsMonitor) {
       statsMonitor.stop();
@@ -1052,6 +1302,37 @@
     enableChat(false);
   };
 
+  // WebSocket 心跳检测
+  const startHeartbeat = () => {
+    stopHeartbeat(); // 先清理之前的
+    
+    heartbeatTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        // 发送心跳
+        ws.send(JSON.stringify({ type: "ping" }));
+        
+        // 设置超时检测
+        heartbeatTimeout = setTimeout(() => {
+          log("心跳超时，WebSocket 可能已断开");
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.close();
+          }
+        }, HEARTBEAT_TIMEOUT);
+      }
+    }, HEARTBEAT_INTERVAL);
+  };
+  
+  const stopHeartbeat = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (heartbeatTimeout) {
+      clearTimeout(heartbeatTimeout);
+      heartbeatTimeout = null;
+    }
+  };
+
   const scheduleReconnect = () => {
     if (reconnectTimer) return;
     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
@@ -1065,6 +1346,10 @@
 
   const cleanup = (manual = false) => {
     manualLeave = manual;
+    
+    // 停止心跳
+    stopHeartbeat();
+    
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -1073,6 +1358,7 @@
       isJoined = false;
       isInitiator = false;
       setUiState(false);
+      iceRestartAttempts = 0;  // 重置 ICE 重启计数
     }
     connState.textContent = manual ? "未连接" : "信令重连中";
     if (ws) {
@@ -1087,6 +1373,16 @@
       }
     }
   };
+
+  // 页面加载时检测 STUN/TURN 服务器（异步，不阻塞）
+  (async () => {
+    try {
+      await testIceServers();
+    } catch (err) {
+      log(`服务器检测异常: ${err.message}`);
+      console.error("Server test error:", err);
+    }
+  })();
 
   joinBtn.addEventListener("click", connectWs);
   leaveBtn.addEventListener("click", () => {

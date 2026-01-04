@@ -45,6 +45,9 @@ public class WebRTCManager {
     private int pendingFrameRate = 15;
     private int pendingBitrate = 2000000;
     private boolean hasPendingConfig = false;
+    
+    // ICE candidates 缓存队列（在 PeerConnection 初始化之前收到的 candidates）
+    private final List<RTCIceCandidate> pendingIceCandidates = Collections.synchronizedList(new ArrayList<>());
 
     /**
      * 设置聊天消息监听器
@@ -241,6 +244,9 @@ public class WebRTCManager {
             });
 
             listener.onStatus("WebRTC 初始化完成");
+            
+            // 处理在初始化之前收到的缓存 ICE candidates
+            processPendingIceCandidates();
         } catch (Exception e) {
             listener.onStatus("WebRTC 初始化失败: " + e.getMessage());
             e.printStackTrace();
@@ -358,11 +364,41 @@ public class WebRTCManager {
             int sdpMLineIndex = candidateNode.path("sdpMLineIndex").asInt();
 
             RTCIceCandidate iceCandidate = new RTCIceCandidate(sdpMid, sdpMLineIndex, candidate);
+            
+            // 检查 PeerConnection 是否已初始化
+            if (peerConnection == null) {
+                // 缓存 ICE candidate，等待 PeerConnection 初始化后再添加
+                pendingIceCandidates.add(iceCandidate);
+                listener.onStatus("ICE 候选已缓存（等待 PeerConnection 初始化）");
+                return;
+            }
+            
             peerConnection.addIceCandidate(iceCandidate);
-
             listener.onStatus("添加 ICE 候选成功");
         } catch (Exception e) {
             listener.onStatus("添加 ICE 候选失败: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 处理缓存的 ICE candidates
+     */
+    private void processPendingIceCandidates() {
+        if (peerConnection == null || pendingIceCandidates.isEmpty()) {
+            return;
+        }
+        
+        listener.onStatus("处理 " + pendingIceCandidates.size() + " 个缓存的 ICE 候选...");
+        
+        synchronized (pendingIceCandidates) {
+            for (RTCIceCandidate candidate : pendingIceCandidates) {
+                try {
+                    peerConnection.addIceCandidate(candidate);
+                } catch (Exception e) {
+                    listener.onStatus("添加缓存的 ICE 候选失败: " + e.getMessage());
+                }
+            }
+            pendingIceCandidates.clear();
         }
     }
 
@@ -483,6 +519,9 @@ public class WebRTCManager {
      */
     public void cleanupRtcOnly() {
         listener.onStatus("清理RTC连接，保持就绪状态...");
+        
+        // 清理缓存的 ICE candidates
+        pendingIceCandidates.clear();
 
         // 通知聊天禁用
         if (chatListener != null) {
@@ -577,6 +616,9 @@ public class WebRTCManager {
             peerConnection = factory.createPeerConnection(config, createPeerConnectionObserver());
 
             listener.onStatus("PeerConnection 已重建");
+            
+            // 处理缓存的 ICE candidates
+            processPendingIceCandidates();
         } catch (Exception e) {
             listener.onStatus("重建 PeerConnection 失败: " + e.getMessage());
             e.printStackTrace();
@@ -717,6 +759,9 @@ public class WebRTCManager {
 
     public void cleanup() {
         listener.onStatus("开始清理 WebRTC 资源...");
+        
+        // 清理缓存的 ICE candidates
+        pendingIceCandidates.clear();
 
         // 1. 关闭 DataChannel
         if (dataChannel != null) {

@@ -47,6 +47,11 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             handleLeave(session);
             return;
         }
+        // 心跳响应
+        if ("ping".equalsIgnoreCase(signal.getType())) {
+            session.sendMessage(new TextMessage("{\"type\":\"pong\"}"));
+            return;
+        }
 
         String roomId = (String) session.getAttributes().get("roomId");
         if (!StringUtils.hasText(roomId)) {
