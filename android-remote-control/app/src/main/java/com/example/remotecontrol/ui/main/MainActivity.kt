@@ -39,6 +39,29 @@ class MainActivity : AppCompatActivity() {
         
         // 检查无障碍服务权限
         checkAccessibilityPermission()
+        // 检查悬浮窗权限（新增）
+        checkOverlayPermission()
+    }
+
+    private fun checkOverlayPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            if (!android.provider.Settings.canDrawOverlays(this)) {
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("需要悬浮窗权限")
+                    .setMessage("为了显示触控波纹反馈，请授予应用\"显示在其他应用上层\"的权限。")
+                    .setPositiveButton("去设置") { _, _ ->
+                        val intent = android.content.Intent(
+                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            android.net.Uri.parse("package:$packageName")
+                        )
+                        startActivity(intent)
+                    }
+                    .setNegativeButton("稍后") { dialog, _ -> 
+                        dialog.dismiss() 
+                    }
+                    .show()
+            }
+        }
     }
     
     private fun checkAccessibilityPermission() {

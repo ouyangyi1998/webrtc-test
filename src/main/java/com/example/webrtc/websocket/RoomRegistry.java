@@ -15,6 +15,29 @@ public class RoomRegistry {
 
     public synchronized boolean addToRoom(String roomId, WebSocketSession session) {
         Set<WebSocketSession> sessions = rooms.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet());
+
+        // 检查是否有同名用户（如果有，踢掉旧的）
+        String newSender = (String) session.getAttributes().get("sender");
+        if (newSender != null) {
+            WebSocketSession duplicate = null;
+            for (WebSocketSession existing : sessions) {
+                String existingSender = (String) existing.getAttributes().get("sender");
+                if (newSender.equals(existingSender) && !existing.getId().equals(session.getId())) {
+                    duplicate = existing;
+                    break;
+                }
+            }
+            if (duplicate != null) {
+                try {
+                    // 关闭旧连接（状态码 4001: Duplicate Login）
+                    duplicate.close(new org.springframework.web.socket.CloseStatus(4001, "Duplicate Login"));
+                    sessions.remove(duplicate);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
         if (sessions.size() >= 2) {
             return false;
         }

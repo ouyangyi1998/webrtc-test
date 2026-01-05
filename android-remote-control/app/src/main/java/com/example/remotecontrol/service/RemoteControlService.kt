@@ -37,14 +37,17 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
     private var screenHeight = 1920
     private var wakeLock: PowerManager.WakeLock? = null
     
+    private var windowManager: WindowManager? = null
+    private var rippleView: com.example.remotecontrol.ui.view.TouchRippleView? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         
         // 获取屏幕尺寸
-        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
-        wm.defaultDisplay.getRealMetrics(metrics)
+        windowManager?.defaultDisplay?.getRealMetrics(metrics)
         screenWidth = metrics.widthPixels
         screenHeight = metrics.heightPixels
         
@@ -54,14 +57,56 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
         
         LogManager.i("RemoteControlService 已启动 (屏幕: ${screenWidth}x${screenHeight})")
         
+        // 初始化触控反馈 View
+        setupTouchFeedbackView()
+
         // 注册控制监听器
         ConnectionManager.addControlListener(this)
     }
     
+    private fun setupTouchFeedbackView() {
+        if (!android.provider.Settings.canDrawOverlays(this)) {
+            LogManager.w("无悬浮窗权限，无法显示触控反馈")
+            return
+        }
+
+        rippleView = com.example.remotecontrol.ui.view.TouchRippleView(this)
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
+            else 
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or 
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            android.graphics.PixelFormat.TRANSLUCENT
+        )
+        
+        try {
+            windowManager?.addView(rippleView, params)
+            LogManager.i("触控反馈 View 已添加")
+        } catch (e: Exception) {
+            LogManager.e("添加触控反馈 View 失败: ${e.message}")
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         instance = null
         ConnectionManager.removeControlListener(this)
+        
+        // 移除悬浮窗
+        if (rippleView != null && windowManager != null) {
+            try {
+                windowManager?.removeView(rippleView)
+            } catch (e: Exception) {
+                // ignore
+            }
+            rippleView = null
+        }
+
         LogManager.i("RemoteControlService 已停止")
     }
     
@@ -125,6 +170,7 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
                 }
             }
             "mousedown" -> {
+                handler.post { rippleView?.showRipple(x.toFloat(), y.toFloat()) }
                 when (button) {
                     0 -> {
                         // 左键按下 - 开始拖动追踪
@@ -158,9 +204,11 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
                 }
             }
             "click" -> {
+                handler.post { rippleView?.showRipple(x.toFloat(), y.toFloat()) }
                 performClick(x, y)
             }
             "dblclick" -> {
+                handler.post { rippleView?.showRipple(x.toFloat(), y.toFloat()) }
                 performDoubleClick(x, y)
             }
             "wheel" -> {
@@ -208,6 +256,17 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
                 LogManager.i("执行最近应用操作")
                 return
             }
+            // 复制 (Ctrl+C)
+            (ctrlKey || metaKey) && key.lowercase() == "c" -> {
+                performCopy()
+                return
+            }
+            // 粘贴 (Ctrl+V)
+            (ctrlKey || metaKey) && key.lowercase() == "v" -> {
+                // Web 端已先发送了剪贴板内容，这里执行粘贴动作
+                performPaste()
+                return
+            }
             // 方向键 - 暂不支持
             code.startsWith("Arrow") -> {
                 LogManager.d("方向键暂不支持")
@@ -215,15 +274,86 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
             }
         }
         
-        // 2. 普通字符输入（通过剪贴板粘贴方式）
+        // 2. 普通字符输入（通过 ACTION_SET_TEXT）
         if (key.length == 1 && !ctrlKey && !altKey && !metaKey) {
             performTextInput(key)
         }
     }
     
-    /**
-     * 通过 ACTION_SET_TEXT 输入文本
-     */
+    // ========== 剪贴板同步 ==========
+    
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    
+    override fun onClipboardMessage(text: String) {
+        handler.post {
+            try {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("RemoteControl", text)
+                clipboard.setPrimaryClip(clip)
+                LogManager.i("已更新 Android 剪贴板: ${text.take(20)}...")
+            } catch (e: Exception) {
+                LogManager.e("设置剪贴板失败: ${e.message}")
+            }
+        }
+    }
+    
+    override fun onQualityControl(fps: Int, bitrate: Int) {
+        LogManager.d("RemoteControlService收到画质调整通知: ${fps}fps, ${bitrate}bps")
+    }
+    
+    private fun performCopy() {
+        try {
+            val focusedNode = findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focusedNode != null) {
+                // 尝试执行复制操作
+                val result = focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_COPY)
+                LogManager.i("执行复制操作: $result")
+                focusedNode.recycle()
+                
+                // 延时读取剪贴板并发送回 Web
+                if (result) {
+                    handler.postDelayed({
+                        readClipboardAndSend()
+                    }, 200)
+                }
+            } else {
+                LogManager.w("未找到焦点，无法复制")
+            }
+        } catch (e: Exception) {
+            LogManager.e("复制失败: ${e.message}")
+        }
+    }
+    
+    private fun performPaste() {
+        try {
+            val focusedNode = findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focusedNode != null) {
+                // 尝试执行粘贴操作
+                val result = focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_PASTE)
+                LogManager.i("执行粘贴操作: $result")
+                focusedNode.recycle()
+            } else {
+                LogManager.w("未找到焦点，无法粘贴")
+            }
+        } catch (e: Exception) {
+            LogManager.e("粘贴失败: ${e.message}")
+        }
+    }
+    
+    private fun readClipboardAndSend() {
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            if (clipboard.hasPrimaryClip()) {
+                val item = clipboard.primaryClip?.getItemAt(0)
+                val text = item?.text?.toString()
+                if (!text.isNullOrEmpty()) {
+                    ConnectionManager.sendClipboardMessage(text)
+                }
+            }
+        } catch (e: Exception) {
+            LogManager.e("读取剪贴板失败: ${e.message}")
+        }
+    }
     private fun performTextInput(text: String) {
         try {
             val focusedNode = findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)

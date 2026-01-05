@@ -53,6 +53,8 @@ object ConnectionManager {
         fun onMouseControl(action: String, xRatio: Float, yRatio: Float, button: Int, deltaY: Float)
         fun onKeyboardControl(type: String, key: String, code: String, 
                               altKey: Boolean, ctrlKey: Boolean, metaKey: Boolean, shiftKey: Boolean)
+        fun onClipboardMessage(text: String)
+        fun onQualityControl(fps: Int, bitrate: Int)
     }
     
     private val controlListeners = mutableListOf<ControlListener>()
@@ -130,6 +132,20 @@ object ConnectionManager {
         val payload = com.example.remotecontrol.control.ControlPayload.chat(nickname, message)
         webRTCManager?.sendDataChannelMessage(payload)
         LogManager.i("发送聊天: $message")
+    }
+    
+    fun sendClipboardMessage(text: String) {
+        val payload = """{"kind":"clipboard","action":"sync","text":"${escapeJson(text)}"}"""
+        webRTCManager?.sendDataChannelMessage(payload)
+        LogManager.i("发送剪贴板: ${text.take(20)}...")
+    }
+    
+    private fun escapeJson(text: String): String {
+        return text.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
     }
     
     fun getEglContext() = webRTCManager?.getEglContext()
@@ -255,11 +271,65 @@ object ConnectionManager {
                     webRTCManager?.addIceCandidate(candidate.first, candidate.second, candidate.third)
                 }
             }
+
+            "control" -> {
+                message.data?.let { handleControlPayload(it) }
+            }
             
             "error" -> {
                 val errorMsg = message.getErrorMessage()
                 LogManager.e("服务器错误: $errorMsg")
                 stateListeners.forEach { it.onError(errorMsg) }
+            }
+        }
+    }
+
+    private fun handleControlPayload(json: com.google.gson.JsonObject) {
+        val kind = json.get("kind")?.asString
+        when (kind) {
+            "chat" -> {
+                val sender = json.get("sender")?.asString ?: "peer"
+                val text = json.get("text")?.asString ?: ""
+                chatListeners.forEach { it.onChatMessage(sender, text) }
+            }
+            "mouse" -> {
+                val action = json.get("action")?.asString ?: ""
+                val xRatio = json.get("xRatio")?.asFloat ?: 0f
+                val yRatio = json.get("yRatio")?.asFloat ?: 0f
+                val button = json.get("button")?.asInt ?: 0
+                val deltaY = json.get("deltaY")?.asFloat ?: 0f
+                controlListeners.forEach { 
+                    it.onMouseControl(action, xRatio, yRatio, button, deltaY) 
+                }
+                LogManager.d("收到鼠标控制: action=$action, x=$xRatio, y=$yRatio")
+            }
+            "keyboard" -> {
+                val type = json.get("type")?.asString ?: ""
+                val key = json.get("key")?.asString ?: ""
+                val code = json.get("code")?.asString ?: ""
+                val altKey = json.get("altKey")?.asBoolean ?: false
+                val ctrlKey = json.get("ctrlKey")?.asBoolean ?: false
+                val metaKey = json.get("metaKey")?.asBoolean ?: false
+                val shiftKey = json.get("shiftKey")?.asBoolean ?: false
+                controlListeners.forEach {
+                    it.onKeyboardControl(type, key, code, altKey, ctrlKey, metaKey, shiftKey)
+                }
+                LogManager.d("收到键盘控制: type=$type, key=$key, code=$code")
+            }
+            "clipboard" -> {
+                val text = json.get("text")?.asString ?: ""
+                controlListeners.forEach { it.onClipboardMessage(text) }
+                LogManager.i("收到剪贴板内容: ${text.take(20)}...")
+            }
+            "quality" -> {
+                val fps = json.get("fps")?.asInt ?: 15
+                val bitrate = json.get("bitrate")?.asInt ?: 2000000
+                
+                // 直接调整 WebRTC 参数
+                webRTCManager?.setVideoConfig(fps, bitrate)
+                
+                controlListeners.forEach { it.onQualityControl(fps, bitrate) }
+                LogManager.i("收到画质调整: ${fps}fps, ${bitrate/1024}kbps")
             }
         }
     }
@@ -302,38 +372,7 @@ object ConnectionManager {
         override fun onDataChannelMessage(message: String) {
             try {
                 val json = com.google.gson.JsonParser.parseString(message).asJsonObject
-                val kind = json.get("kind")?.asString
-                when (kind) {
-                    "chat" -> {
-                        val sender = json.get("sender")?.asString ?: "peer"
-                        val text = json.get("text")?.asString ?: ""
-                        chatListeners.forEach { it.onChatMessage(sender, text) }
-                    }
-                    "mouse" -> {
-                        val action = json.get("action")?.asString ?: ""
-                        val xRatio = json.get("xRatio")?.asFloat ?: 0f
-                        val yRatio = json.get("yRatio")?.asFloat ?: 0f
-                        val button = json.get("button")?.asInt ?: 0
-                        val deltaY = json.get("deltaY")?.asFloat ?: 0f
-                        controlListeners.forEach { 
-                            it.onMouseControl(action, xRatio, yRatio, button, deltaY) 
-                        }
-                        LogManager.d("收到鼠标控制: action=$action, x=$xRatio, y=$yRatio")
-                    }
-                    "keyboard" -> {
-                        val type = json.get("type")?.asString ?: ""
-                        val key = json.get("key")?.asString ?: ""
-                        val code = json.get("code")?.asString ?: ""
-                        val altKey = json.get("altKey")?.asBoolean ?: false
-                        val ctrlKey = json.get("ctrlKey")?.asBoolean ?: false
-                        val metaKey = json.get("metaKey")?.asBoolean ?: false
-                        val shiftKey = json.get("shiftKey")?.asBoolean ?: false
-                        controlListeners.forEach {
-                            it.onKeyboardControl(type, key, code, altKey, ctrlKey, metaKey, shiftKey)
-                        }
-                        LogManager.d("收到键盘控制: type=$type, key=$key, code=$code")
-                    }
-                }
+                handleControlPayload(json)
             } catch (e: Exception) {
                 LogManager.e("解析 DataChannel 消息失败: ${e.message}")
             }

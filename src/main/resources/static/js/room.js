@@ -55,15 +55,23 @@
     targetBitrate: 2000000
   };
 
-  // ===== 自动码率调整引擎 =====
-  class BitrateAdjuster {
+  // ===== 自动画质/码率控制引擎 =====
+  class QualityController {
     constructor() {
       this.enabled = false;
       this.currentBitrate = 2000000;  // 当前码率
+      this.currentFps = 15;           // 当前帧率
+
+      // 配置参数
       this.minBitrate = 300000;       // 最低300kbps
       this.maxBitrate = 4000000;      // 最高4Mbps
+      this.minFps = 5;                // 最低5fps
+      this.maxFps = 30;               // 最高30fps
+
       this.adjustCooldown = 5000;     // 5秒冷却
       this.lastAdjustTime = 0;
+
+      // 状态计数器
       this.consecutiveBadSamples = 0;
       this.consecutiveGoodSamples = 0;
     }
@@ -71,13 +79,14 @@
     setMode(mode) {
       this.enabled = (mode === 'auto');
       if (!this.enabled) {
-        // 手动模式下直接设置目标码率
+        // 手动模式下直接设置目标码率和默认帧率
         const bitrateMap = {
           'smooth': 500000,
           'hd': 2000000,
           'original': 4000000
         };
         this.currentBitrate = bitrateMap[mode] || 2000000;
+        this.currentFps = streamConfig.frameRate || 15;
       }
     }
 
@@ -87,38 +96,68 @@
       const now = Date.now();
       if (now - this.lastAdjustTime < this.adjustCooldown) return null;
 
-      // 综合判断网络状况
-      const isBad = (metrics.packetLoss > 0.05) || (metrics.rtt && metrics.rtt > 100);
-      const isGood = (metrics.packetLoss < 0.02) && (metrics.rtt && metrics.rtt < 50);
+      // 判定网络状况
+      // 恶劣: 丢包 > 5% 或 RTT > 300ms
+      const isCritical = metrics.packetLoss > 0.10 || (metrics.rtt && metrics.rtt > 500);
+      const isBad = metrics.packetLoss > 0.05 || (metrics.rtt && metrics.rtt > 200);
 
-      if (isBad) {
+      // 良好: 丢包 < 1% 且 RTT < 100ms
+      const isGood = metrics.packetLoss < 0.01 && (metrics.rtt && metrics.rtt < 100);
+
+      let actionTaken = false;
+
+      if (isCritical) {
+        this.consecutiveBadSamples += 2; // 严重情况加速降级
+      } else if (isBad) {
         this.consecutiveBadSamples++;
-        this.consecutiveGoodSamples = 0;
-
-        // 连续3次不佳则降低码率
-        if (this.consecutiveBadSamples >= 3) {
-          const newBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
-          if (newBitrate !== this.currentBitrate) {
-            this.currentBitrate = newBitrate;
-            this.lastAdjustTime = now;
-            this.consecutiveBadSamples = 0;
-            return newBitrate;
-          }
-        }
       } else if (isGood) {
         this.consecutiveGoodSamples++;
+      } else {
+        // 一般情况，重置计数
+        this.consecutiveBadSamples = Math.max(0, this.consecutiveBadSamples - 1);
+        this.consecutiveGoodSamples = Math.max(0, this.consecutiveGoodSamples - 1);
+      }
+
+      // 降级策略
+      if (this.consecutiveBadSamples >= 3) {
+        this.consecutiveGoodSamples = 0;
         this.consecutiveBadSamples = 0;
 
-        // 连续5次良好则提高码率
-        if (this.consecutiveGoodSamples >= 5) {
-          const newBitrate = Math.min(this.maxBitrate, this.currentBitrate * 1.3);
-          if (newBitrate !== this.currentBitrate) {
-            this.currentBitrate = newBitrate;
-            this.lastAdjustTime = now;
-            this.consecutiveGoodSamples = 0;
-            return newBitrate;
-          }
+        // 1. 优先降低码率
+        if (this.currentBitrate > this.minBitrate) {
+          this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
+          actionTaken = true;
         }
+        // 2. 如果码率已经很低，降低帧率以减少拥塞
+        else if (this.currentFps > this.minFps) {
+          this.currentFps = Math.max(this.minFps, this.currentFps - 5);
+          actionTaken = true;
+        }
+      }
+
+      // 升级策略
+      if (this.consecutiveGoodSamples >= 5) {
+        this.consecutiveBadSamples = 0;
+        this.consecutiveGoodSamples = 0;
+
+        // 1. 优先恢复帧率
+        if (this.currentFps < this.maxFps) {
+          this.currentFps = Math.min(this.maxFps, this.currentFps + 5);
+          actionTaken = true;
+        }
+        // 2. 其次提高码率
+        else if (this.currentBitrate < this.maxBitrate) {
+          this.currentBitrate = Math.min(this.maxBitrate, this.currentBitrate * 1.3);
+          actionTaken = true;
+        }
+      }
+
+      if (actionTaken) {
+        this.lastAdjustTime = now;
+        return {
+          bitrate: Math.floor(this.currentBitrate),
+          fps: Math.floor(this.currentFps)
+        };
       }
 
       return null;
@@ -250,24 +289,40 @@
 
   // ===== 流控制相关函数 =====
   const applyStreamConfig = async () => {
-    if (!pc || !isJoined) return;
+    if (!isJoined) return;
 
     streamConfig.frameRate = parseInt(frameRateSelect.value);
     streamConfig.bitrateMode = bitrateSelect.value;
 
     // 根据档位设置目标码率
     const bitrateMap = {
-      'smooth': 500000,    // 500kbps
-      'hd': 2000000,       // 2Mbps
-      'original': 4000000, // 4Mbps
-      'auto': 2000000      // 默认2Mbps，后续由自动调整
+      'smooth': 500000,    // 500kbps (流畅)
+      'hd': 2000000,       // 2Mbps (高清/默认)
+      'original': 4000000, // 4Mbps (原画)
+      'auto': 2000000      // 默认
     };
     streamConfig.targetBitrate = bitrateMap[streamConfig.bitrateMode] || 2000000;
 
     log(`应用流配置: ${streamConfig.frameRate}fps, ${streamConfig.bitrateMode}, ${(streamConfig.targetBitrate / 1000).toFixed(0)}kbps`);
 
-    // 通过信令发送配置到Agent
-    sendSignal('stream_config', streamConfig);
+    // 构建 quality 命令
+    const payload = {
+      kind: "quality",
+      fps: streamConfig.frameRate,
+      bitrate: streamConfig.targetBitrate
+    };
+
+    // 优先通过 DataChannel 发送
+    if (dataChannel && dataChannel.readyState === "open") {
+      try {
+        dataChannel.send(JSON.stringify(payload));
+      } catch (e) {
+        log(`Quality 切换失败 (DataChannel): ${e.message}`);
+      }
+    } else {
+      // 降级：通过 WebSocket 发送 (如果对方支持)
+      sendSignal('control', payload);
+    }
   };
 
   const updateStatsDisplay = (metrics) => {
@@ -617,7 +672,7 @@
         // 启动网络统计监控
         if (!statsMonitor) {
           statsMonitor = new NetworkStatsMonitor(pc);
-          bitrateAdjuster = new BitrateAdjuster();
+          bitrateAdjuster = new QualityController();
           bitrateAdjuster.setMode(bitrateSelect.value);
 
           statsMonitor.onStatsUpdate = (metrics) => {
@@ -625,11 +680,29 @@
 
             // 自动码率调整
             if (bitrateAdjuster && bitrateAdjuster.enabled) {
-              const newBitrate = bitrateAdjuster.analyze(metrics);
-              if (newBitrate !== null) {
-                streamConfig.targetBitrate = newBitrate;
-                log(`自动调整码率: ${(newBitrate / 1000).toFixed(0)}kbps`);
-                sendSignal('stream_config', streamConfig);
+              const result = bitrateAdjuster.analyze(metrics);
+              if (result !== null) {
+                streamConfig.targetBitrate = result.bitrate;
+                streamConfig.frameRate = result.fps; // 同时调整帧率
+
+                log(`自动调整: ${result.fps}fps, ${(result.bitrate / 1000).toFixed(0)}kbps`);
+
+                // 复用 applyStreamConfig 发送指令
+                // 更新 UI 显示（可选）
+                frameRateSelect.value = result.fps >= 30 ? "30" : (result.fps >= 15 ? "15" : "5");
+
+                // 发送控制指令
+                const payload = {
+                  kind: "quality",
+                  fps: streamConfig.frameRate,
+                  bitrate: streamConfig.targetBitrate
+                };
+
+                if (dataChannel && dataChannel.readyState === "open") {
+                  dataChannel.send(JSON.stringify(payload));
+                } else {
+                  sendSignal('control', payload);
+                }
               }
             }
           };
@@ -956,6 +1029,12 @@
 
   const sendKeyboard = (type, e) => {
     if (!isController()) return;
+
+    // Ctrl+V: 先发送剪贴板内容到 Android
+    if (type === "keydown" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+      sendClipboardToRemote();
+    }
+
     const payload = {
       kind: "keyboard",
       type,
@@ -979,6 +1058,38 @@
     } catch (e) {
       log(`DataChannel 发送失败，降级使用 WebSocket: ${e.message}`);
       sendSignal("control", payload);
+    }
+  };
+
+  // ===== 剪贴板同步 =====
+
+  /**
+   * 发送本地剪贴板内容到远程设备
+   */
+  const sendClipboardToRemote = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        const payload = { kind: "clipboard", action: "sync", text };
+        if (dataChannel && dataChannel.readyState === "open") {
+          dataChannel.send(JSON.stringify(payload));
+          log(`发送剪贴板到远程: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`);
+        }
+      }
+    } catch (err) {
+      log(`读取剪贴板失败: ${err.message}`);
+    }
+  };
+
+  /**
+   * 接收远程剪贴板内容并写入本地
+   */
+  const receiveClipboardFromRemote = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      log(`收到远程剪贴板: ${text.substring(0, 50)}${text.length > 50 ? "..." : ""}`);
+    } catch (err) {
+      log(`写入剪贴板失败: ${err.message}`);
     }
   };
 

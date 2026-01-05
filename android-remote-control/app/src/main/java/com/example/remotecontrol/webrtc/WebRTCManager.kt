@@ -422,6 +422,35 @@ class WebRTCManager(
     }
 
     /**
+     * 设置视频参数（动态调整画质）
+     */
+    fun setVideoConfig(fps: Int, bitrateBps: Int) {
+        // 1. 调整采集帧率
+        try {
+            videoCapturer?.changeCaptureFormat(
+                RemoteControlService.captureWidth, 
+                RemoteControlService.captureHeight, 
+                fps
+            )
+            Log.i(TAG, "Changed capture format to ${fps}fps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to change capture format: ${e.message}")
+        }
+        
+        // 2. 调整编码器码率
+        peerConnection?.senders?.find { it.track()?.kind() == "video" }?.let { sender ->
+            val parameters = sender.parameters
+            if (parameters.encodings.isNotEmpty()) {
+                val encoding = parameters.encodings[0]
+                encoding.maxBitrateBps = bitrateBps
+                // 也可以设置 minBitrateBps，但一般只需限制上限
+                sender.parameters = parameters
+                Log.i(TAG, "Changed max bitrate to ${bitrateBps/1000}kbps")
+            }
+        }
+    }
+
+    /**
      * 关闭 PeerConnection
      */
     fun closePeerConnection() {
