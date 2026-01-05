@@ -34,12 +34,12 @@
   let reconnectTimer;
   let connecting = false;
   let manualLeave = false;
-  
+
   // ICE 重连相关
   let iceDisconnectTimer = null;  // ICE disconnected 状态恢复超时
   let iceRestartAttempts = 0;     // ICE 重启尝试次数
   const MAX_ICE_RESTART_ATTEMPTS = 3;  // 最大重启次数
-  
+
   // WebSocket 心跳相关
   let heartbeatTimer = null;
   let heartbeatTimeout = null;
@@ -470,10 +470,10 @@
     for (const server of servers) {
       const serverName = server.name || server.urls;
       log(`检测 ${serverName} (${server.urls})...`);
-      
+
       const result = await testIceServer(server, 5000);
       results.push({ server: serverName, url: server.urls, ...result });
-      
+
       if (result.available) {
         const details = [];
         if (result.hasRelay) details.push("TURN relay");
@@ -482,7 +482,7 @@
       } else {
         log(`✗ ${serverName} 不可用${result.error ? ': ' + result.error : ''}`);
       }
-      
+
       // 每个服务器检测之间稍作延迟
       await new Promise(resolve => setTimeout(resolve, 200));
     }
@@ -496,7 +496,7 @@
   };
 
   let iceGatheringTimeout = null;
-  
+
   const ensurePeer = () => {
     if (pc) return pc;
     const rtcConfig = {
@@ -505,7 +505,7 @@
       iceCandidatePoolSize: 0, // 改为 0，减少候选收集时间
     };
     pc = new RTCPeerConnection(rtcConfig);
-    
+
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         sendSignal("candidate", { candidate: e.candidate });
@@ -526,11 +526,11 @@
         }
       }
     };
-    
+
     pc.onicecandidateerror = (e) => {
       const errorMsg = e.errorText || e.message || e.errorCode || "unknown";
       log(`ICE candidate error: ${errorMsg}`);
-      
+
       // 详细的错误信息
       if (errorMsg.includes("STUN") || errorMsg.includes("stun")) {
         log("  → STUN 服务器可能不可用或网络问题");
@@ -539,7 +539,7 @@
       } else if (errorMsg.includes("timeout") || errorMsg.includes("超时")) {
         log("  → 服务器响应超时，请检查网络连接");
       }
-      
+
       console.error("ICE candidate error details:", {
         errorText: e.errorText,
         errorCode: e.errorCode,
@@ -549,17 +549,17 @@
         port: e.port,
       });
     };
-    
+
     pc.onicegatheringstatechange = () => {
       log(`ICE gathering state: ${pc.iceGatheringState}`);
-      
+
       // 当开始收集候选时，设置超时
       if (pc.iceGatheringState === 'gathering') {
         // 清除之前的超时
         if (iceGatheringTimeout) {
           clearTimeout(iceGatheringTimeout);
         }
-        
+
         // 设置 3 秒超时，如果还在 gathering 状态则强制继续
         iceGatheringTimeout = setTimeout(() => {
           if (pc && pc.iceGatheringState === 'gathering') {
@@ -577,18 +577,18 @@
     };
     pc.oniceconnectionstatechange = () => {
       log(`ICE连接状态: ${pc.iceConnectionState}`);
-      
+
       // 清除之前的 disconnected 恢复超时
       if (iceDisconnectTimer) {
         clearTimeout(iceDisconnectTimer);
         iceDisconnectTimer = null;
       }
-      
+
       // 处理 disconnected 状态（弱网临时断开）
       if (pc.iceConnectionState === "disconnected") {
         log("ICE 连接暂时断开，等待恢复...");
         connState.textContent = "连接恢复中...";
-        
+
         // 如果不是手动断开，设置 5 秒超时尝试恢复
         if (!manualLeave) {
           iceDisconnectTimer = setTimeout(() => {
@@ -599,7 +599,7 @@
           }, 5000);
         }
       }
-      
+
       // 处理 failed 状态
       if (pc.iceConnectionState === "failed") {
         log("ICE 连接失败");
@@ -607,7 +607,7 @@
           tryIceRestart();
         }
       }
-      
+
       // 连接成功
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
         // 重置重启计数
@@ -794,7 +794,7 @@
       connecting = false;
       log("WebSocket 已连接");
       ws.send(JSON.stringify({ type: "join", roomId, sender }));
-      
+
       // 启动心跳检测
       startHeartbeat();
     };
@@ -856,10 +856,10 @@
       log("WebSocket 已关闭");
       connecting = false;
       connState.textContent = "信令已断开";
-      
+
       // 停止心跳
       stopHeartbeat();
-      
+
       teardownRtc(true);
       if (!manualLeave && isJoined) {
         scheduleReconnect();
@@ -1236,27 +1236,27 @@
       log("手动断开，不进行 ICE 重启");
       return;
     }
-    
+
     if (!pc) {
       log("PeerConnection 不存在，无法重启 ICE");
       return;
     }
-    
+
     iceRestartAttempts++;
-    
+
     if (iceRestartAttempts > MAX_ICE_RESTART_ATTEMPTS) {
       log(`ICE 重启失败次数过多（${MAX_ICE_RESTART_ATTEMPTS}次），放弃重试`);
       connState.textContent = "连接失败";
       // 可以选择重新建立整个连接
       return;
     }
-    
+
     log(`尝试 ICE 重启（第 ${iceRestartAttempts} 次）...`);
     connState.textContent = `重连中（${iceRestartAttempts}/${MAX_ICE_RESTART_ATTEMPTS}）`;
-    
+
     try {
       pc.restartIce();
-      
+
       // 如果是发起方，重新创建带 iceRestart 选项的 offer
       if (isInitiator) {
         log("作为发起方，创建新的 offer（iceRestart）");
@@ -1277,7 +1277,7 @@
       iceDisconnectTimer = null;
     }
     iceRestartAttempts = 0;
-    
+
     // 清理网络统计监控器
     if (statsMonitor) {
       statsMonitor.stop();
@@ -1305,12 +1305,12 @@
   // WebSocket 心跳检测
   const startHeartbeat = () => {
     stopHeartbeat(); // 先清理之前的
-    
+
     heartbeatTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         // 发送心跳
         ws.send(JSON.stringify({ type: "ping" }));
-        
+
         // 设置超时检测
         heartbeatTimeout = setTimeout(() => {
           log("心跳超时，WebSocket 可能已断开");
@@ -1321,7 +1321,7 @@
       }
     }, HEARTBEAT_INTERVAL);
   };
-  
+
   const stopHeartbeat = () => {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
@@ -1346,10 +1346,10 @@
 
   const cleanup = (manual = false) => {
     manualLeave = manual;
-    
+
     // 停止心跳
     stopHeartbeat();
-    
+
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -1425,11 +1425,11 @@
   // ===== 全屏功能 =====
   const toggleFullscreen = () => {
     const container = document.getElementById("videoContainer");
-    
+
     // 详细日志
     log("点击全屏按钮");
     console.log("videoContainer:", container);
-    
+
     if (!container) {
       log("错误: videoContainer 元素不存在");
       console.error("videoContainer element not found");
@@ -1443,7 +1443,7 @@
       document.mozFullScreenEnabled ||
       document.msFullscreenEnabled
     );
-    
+
     log(`浏览器全屏支持: ${supportsFullscreen}`);
     console.log("Fullscreen API support:", {
       fullscreenEnabled: document.fullscreenEnabled,
@@ -1466,10 +1466,10 @@
 
     try {
       // 检查是否已经全屏
-      const isFullscreen = !!(document.fullscreenElement || 
-                              document.webkitFullscreenElement || 
-                              document.mozFullScreenElement || 
-                              document.msFullscreenElement);
+      const isFullscreen = !!(document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement);
 
       log(`当前全屏状态: ${isFullscreen}`);
 
@@ -1491,7 +1491,7 @@
       } else {
         // 进入全屏
         log("尝试进入全屏...");
-        
+
         // 尝试容器全屏
         let fullscreenPromise = null;
         if (container.requestFullscreen) {
@@ -1503,14 +1503,14 @@
         } else if (container.msRequestFullscreen) {
           fullscreenPromise = container.msRequestFullscreen();
         }
-        
+
         if (fullscreenPromise) {
           fullscreenPromise.then(() => {
             log("已进入全屏");
           }).catch(err => {
             log(`容器全屏失败: ${err.message}，尝试视频全屏...`);
             console.error("Container fullscreen error:", err);
-            
+
             // 如果容器全屏失败，尝试视频元素全屏
             const video = document.getElementById("remoteVideo");
             if (video) {
@@ -1541,15 +1541,15 @@
 
   const updateFullscreenButton = () => {
     const isFullscreen = !!(document.fullscreenElement === videoContainer ||
-                            document.webkitFullscreenElement === videoContainer ||
-                            document.mozFullScreenElement === videoContainer ||
-                            document.msFullscreenElement === videoContainer);
+      document.webkitFullscreenElement === videoContainer ||
+      document.mozFullScreenElement === videoContainer ||
+      document.msFullscreenElement === videoContainer);
 
     // 更新顶部按钮
     if (fullscreenBtn) {
       const icon = fullscreenBtn.querySelector('svg path');
       const text = fullscreenBtn.querySelector('span');
-      
+
       if (isFullscreen) {
         if (icon) {
           icon.setAttribute('d', 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3');
@@ -1569,7 +1569,7 @@
     if (fullscreenBtnFloat) {
       const icon = fullscreenBtnFloat.querySelector('svg path');
       const text = fullscreenBtnFloat.querySelector('span');
-      
+
       if (isFullscreen) {
         if (icon) {
           icon.setAttribute('d', 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3');
@@ -1614,26 +1614,14 @@
     });
   }
 
-  // 键盘快捷键：F11 或 F 键进入/退出全屏
+  // 键盘快捷键：F11 进入/退出全屏（移除了 F 键，避免干扰远程输入）
   document.addEventListener('keydown', (e) => {
     // F11 键：全屏（需要阻止浏览器默认行为）
     if (e.key === 'F11') {
       e.preventDefault();
       toggleFullscreen();
     }
-    // F 键：全屏（需要在非输入框状态下）
-    else if (e.key === 'f' || e.key === 'F') {
-      const activeElement = document.activeElement;
-      const isInput = activeElement && (
-        activeElement.tagName === 'INPUT' ||
-        activeElement.tagName === 'TEXTAREA' ||
-        activeElement.contentEditable === 'true'
-      );
-      if (!isInput) {
-        e.preventDefault();
-        toggleFullscreen();
-      }
-    }
+    // 注意：不再使用 F 键触发全屏，以免干扰远程控制的键盘输入
   });
 
 })(); 
