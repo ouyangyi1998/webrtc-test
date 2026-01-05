@@ -3,6 +3,7 @@ package com.example.remotecontrol.webrtc
 import android.content.Context
 import android.util.Log
 import android.media.projection.MediaProjection
+import com.example.remotecontrol.service.RemoteControlService
 import org.webrtc.*
 import java.nio.ByteBuffer
 
@@ -84,7 +85,11 @@ class WebRTCManager(
         val videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast) 
         surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBase?.eglBaseContext)
         videoCapturer!!.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-        videoCapturer!!.startCapture(remoteVideoWidth, remoteVideoHeight, 15)
+        videoCapturer!!.startCapture(
+            RemoteControlService.captureWidth, 
+            RemoteControlService.captureHeight, 
+            15
+        )
 
         val videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
         videoTrack?.setEnabled(true)

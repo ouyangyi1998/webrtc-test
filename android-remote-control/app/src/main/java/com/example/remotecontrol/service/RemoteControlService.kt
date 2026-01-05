@@ -2,8 +2,10 @@ package com.example.remotecontrol.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Context
 import android.graphics.Path
 import android.os.Build
+import android.os.PowerManager
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
@@ -23,10 +25,17 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
         @Volatile
         var instance: RemoteControlService? = null
             private set
+            
+        // 共享屏幕尺寸，供 WebRTCManager 使用
+        var captureWidth = 1080
+            private set
+        var captureHeight = 1920
+            private set
     }
     
     private var screenWidth = 1080
     private var screenHeight = 1920
+    private var wakeLock: PowerManager.WakeLock? = null
     
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -38,6 +47,10 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
         wm.defaultDisplay.getRealMetrics(metrics)
         screenWidth = metrics.widthPixels
         screenHeight = metrics.heightPixels
+        
+        // 更新共享的捕获尺寸
+        captureWidth = screenWidth
+        captureHeight = screenHeight
         
         LogManager.i("RemoteControlService 已启动 (屏幕: ${screenWidth}x${screenHeight})")
         
@@ -60,6 +73,31 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
         // 服务中断
     }
     
+    // ========== 唤醒屏幕 ==========
+    
+    /**
+     * 唤醒屏幕
+     */
+    private fun wakeScreen() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isInteractive) {
+                // 屏幕关闭，唤醒它
+                @Suppress("DEPRECATION")
+                val wl = pm.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or 
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                    "RemoteControl:WakeLock"
+                )
+                wl.acquire(3000) // 持续3秒
+                LogManager.i("屏幕已唤醒")
+            }
+        } catch (e: Exception) {
+            LogManager.e("唤醒屏幕失败: ${e.message}")
+        }
+    }
+    
     // ========== 控制事件处理 ==========
     
     // 拖动状态
@@ -70,6 +108,11 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
     private var lastDragY = 0
     
     override fun onMouseControl(action: String, xRatio: Float, yRatio: Float, button: Int, deltaY: Float) {
+        // 收到控制事件时唤醒屏幕
+        if (action != "move") {
+            wakeScreen()
+        }
+        
         val x = (xRatio * screenWidth).toInt().coerceIn(0, screenWidth - 1)
         val y = (yRatio * screenHeight).toInt().coerceIn(0, screenHeight - 1)
         
@@ -179,22 +222,22 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
     }
     
     /**
-     * 通过剪贴板粘贴方式输入文本
+     * 通过 ACTION_SET_TEXT 输入文本
      */
     private fun performTextInput(text: String) {
         try {
-            // 获取焦点节点
             val focusedNode = findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
             if (focusedNode == null) {
                 LogManager.w("未找到输入焦点，无法输入文本")
                 return
             }
             
-            // 使用 ACTION_SET_TEXT（Android 5.0+）
+            // 刷新节点获取最新状态
+            focusedNode.refresh()
+            
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                // 获取当前文本
-                val currentText = focusedNode.text?.toString() ?: ""
-                // 追加新字符
+                // 获取当前可编辑文本（排除 hint）
+                val currentText = getEditableText(focusedNode)
                 val newText = currentText + text
                 
                 val arguments = android.os.Bundle()
@@ -203,12 +246,32 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
                     newText
                 )
                 focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-                LogManager.d("输入文本: $text")
+                LogManager.d("输入文本: '$text', 当前: '$currentText' -> '$newText'")
             }
             
             focusedNode.recycle()
         } catch (e: Exception) {
             LogManager.e("输入文本失败: ${e.message}")
+        }
+    }
+    
+    /**
+     * 获取可编辑文本（排除 hint 提示文字）
+     */
+    private fun getEditableText(node: android.view.accessibility.AccessibilityNodeInfo): String {
+        // 优先使用 text（如果不是 hint）
+        val text = node.text?.toString()
+        val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            node.hintText?.toString()
+        } else {
+            null
+        }
+        
+        // 如果 text 等于 hint，说明输入框为空（显示的是 hint）
+        return if (text != null && text != hint) {
+            text
+        } else {
+            ""
         }
     }
     
@@ -223,8 +286,11 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
                 return
             }
             
+            // 刷新节点获取最新状态
+            focusedNode.refresh()
+            
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                val currentText = focusedNode.text?.toString() ?: ""
+                val currentText = getEditableText(focusedNode)
                 if (currentText.isNotEmpty()) {
                     val newText = currentText.dropLast(1)
                     val arguments = android.os.Bundle()
@@ -233,7 +299,7 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
                         newText
                     )
                     focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-                    LogManager.d("删除字符")
+                    LogManager.d("删除字符: '$currentText' -> '$newText'")
                 }
             }
             

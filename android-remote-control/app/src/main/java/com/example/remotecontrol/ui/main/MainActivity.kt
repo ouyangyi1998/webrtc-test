@@ -36,6 +36,35 @@ class MainActivity : AppCompatActivity() {
         
         setupFragments()
         setupBottomNavigation()
+        
+        // 检查无障碍服务权限
+        checkAccessibilityPermission()
+    }
+    
+    private fun checkAccessibilityPermission() {
+        if (!isAccessibilityServiceEnabled()) {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("需要无障碍权限")
+                .setMessage("远程控制功能需要启用无障碍服务。\n\n请在设置中找到\"远程控制服务\"并启用。")
+                .setPositiveButton("去设置") { _, _ ->
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    startActivity(intent)
+                }
+                .setNegativeButton("稍后") { dialog, _ ->
+                    dialog.dismiss()
+                }
+                .setCancelable(false)
+                .show()
+        }
+    }
+    
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val serviceName = "${packageName}/${com.example.remotecontrol.service.RemoteControlService::class.java.canonicalName}"
+        val enabledServices = android.provider.Settings.Secure.getString(
+            contentResolver,
+            android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabledServices.contains(serviceName)
     }
     
     private fun setupFragments() {
