@@ -60,11 +60,17 @@ class WebRTCManager(
         PeerConnectionFactory.initialize(initOptions)
 
         val options = PeerConnectionFactory.Options()
+        
+        // DefaultVideoEncoderFactory 内置硬件优先 + 软件回退机制:
+        // - 优先使用硬件编码器 (MediaCodec)
+        // - 如果硬件不支持，自动回退到 VP8/VP9 软件编码器
         val encoderFactory = DefaultVideoEncoderFactory(
             eglBase?.eglBaseContext,
-            false,
-            true
+            true,   // enableIntelVp8Encoder - 启用 VP8/VP9 硬件编码 (如果可用)
+            true    // enableH264HighProfile - 启用 H264 High Profile (更高压缩率)
         )
+        
+        // DefaultVideoDecoderFactory 同样内置软硬件回退
         val decoderFactory = DefaultVideoDecoderFactory(eglBase?.eglBaseContext)
 
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -73,7 +79,7 @@ class WebRTCManager(
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
         
-        Log.d(TAG, "WebRTC initialized")
+        Log.d(TAG, "WebRTC initialized (hardware encoder preferred, software fallback)")
     }
 
     /**
@@ -419,6 +425,33 @@ class WebRTCManager(
      */
     fun restartIce() {
         peerConnection?.restartIce()
+    }
+    
+    /**
+     * 请求关键帧 (I 帧)
+     * 当控制端检测到画面卡顿时调用
+     */
+    fun requestKeyFrame() {
+        try {
+            // 方法1: 通过改变采集格式触发新的 I 帧
+            videoCapturer?.changeCaptureFormat(
+                RemoteControlService.captureWidth,
+                RemoteControlService.captureHeight,
+                15  // 保持当前帧率
+            )
+            Log.i(TAG, "Requested key frame via capture format change")
+            
+            // 方法2: 通过 RtpSender 触发 (备选)
+            peerConnection?.senders?.find { it.track()?.kind() == "video" }?.let { sender ->
+                val parameters = sender.parameters
+                if (parameters.encodings.isNotEmpty()) {
+                    // 修改参数会触发编码器重新配置，产生 I 帧
+                    sender.parameters = parameters
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to request key frame: ${e.message}")
+        }
     }
 
     /**

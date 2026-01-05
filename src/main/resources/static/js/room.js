@@ -55,6 +55,66 @@
     targetBitrate: 2000000
   };
 
+  // 帧监控相关（用于检测卡顿并请求关键帧）
+  let frameMonitorTimer = null;
+  let lastFrameCount = 0;
+  let frameStuckCount = 0;
+
+  // 启动帧监控
+  const startFrameMonitor = () => {
+    if (frameMonitorTimer) return;
+
+    frameMonitorTimer = setInterval(async () => {
+      if (!pc || !remoteVideo) return;
+
+      try {
+        const stats = await pc.getStats();
+        let currentFrameCount = 0;
+
+        stats.forEach((report) => {
+          if (report.type === 'inbound-rtp' && report.kind === 'video') {
+            currentFrameCount = report.framesDecoded || 0;
+          }
+        });
+
+        // 检测帧是否卡住（2秒内没有新帧解码）
+        if (currentFrameCount > 0 && currentFrameCount === lastFrameCount) {
+          frameStuckCount++;
+          if (frameStuckCount >= 2) {
+            log('检测到画面卡顿，请求关键帧');
+            requestKeyFrame();
+            frameStuckCount = 0;
+          }
+        } else {
+          frameStuckCount = 0;
+        }
+
+        lastFrameCount = currentFrameCount;
+      } catch (e) {
+        console.error('帧监控异常:', e);
+      }
+    }, 2000);  // 每2秒检测一次
+  };
+
+  // 停止帧监控
+  const stopFrameMonitor = () => {
+    if (frameMonitorTimer) {
+      clearInterval(frameMonitorTimer);
+      frameMonitorTimer = null;
+    }
+    lastFrameCount = 0;
+    frameStuckCount = 0;
+  };
+
+  // 请求关键帧
+  const requestKeyFrame = () => {
+    if (dataChannel && dataChannel.readyState === 'open') {
+      dataChannel.send(JSON.stringify({ kind: 'request_keyframe' }));
+    } else if (ws && ws.readyState === WebSocket.OPEN) {
+      sendSignal('control', { kind: 'request_keyframe' });
+    }
+  };
+
   // ===== 自动画质/码率控制引擎 =====
   class QualityController {
     constructor() {
@@ -673,6 +733,9 @@
         iceRestartAttempts = 0;
         logSelectedCandidate();
 
+        // 启动视频帧监控，检测卡顿时请求关键帧
+        startFrameMonitor();
+
         // 启动网络统计监控
         if (!statsMonitor) {
           statsMonitor = new NetworkStatsMonitor(pc);
@@ -870,71 +933,76 @@
       reconnectAttempts = 0;
       connecting = false;
       log("WebSocket 已连接");
-      
+
       // P1: 重连时清理旧的 PeerConnection，避免状态混乱
       if (reconnect && pc) {
         log("信令重连，清理旧的 RTC 连接");
         teardownRtc(true);
         iceRestartAttempts = 0;
       }
-      
+
       ws.send(JSON.stringify({ type: "join", roomId, sender }));
 
       // 启动心跳检测
       startHeartbeat();
     };
     ws.onmessage = async (event) => {
-      const msg = JSON.parse(event.data);
-      switch (msg.type) {
-        case "join-ack":
-          isJoined = true;
-          setUiState(true);
-          connState.textContent = "信令已连接";
-          const participants = msg.data?.participants || 1;
-          log(`加入成功，房间在线人数: ${participants}`);
+      try {
+        const msg = JSON.parse(event.data);
+        switch (msg.type) {
+          case "join-ack":
+            isJoined = true;
+            setUiState(true);
+            connState.textContent = "信令已连接";
+            const participants = msg.data?.participants || 1;
+            log(`加入成功，房间在线人数: ${participants}`);
 
-          // 如果房间里已经有其他人，主动创建 offer（控制端逻辑）
-          if (participants > 1 && isController()) {
-            log("房间已有成员，作为控制端主动创建 offer");
+            // 如果房间里已经有其他人，主动创建 offer（控制端逻辑）
+            if (participants > 1 && isController()) {
+              log("房间已有成员，作为控制端主动创建 offer");
+              isInitiator = true;
+              await startMediaAndOffer();
+            }
+            break;
+          case "peer-joined":
+            log("有新成员加入，开始创建 offer");
             isInitiator = true;
             await startMediaAndOffer();
-          }
-          break;
-        case "peer-joined":
-          log("有新成员加入，开始创建 offer");
-          isInitiator = true;
-          await startMediaAndOffer();
-          break;
-        case "peer-left":
-          log("对端已离开，清理RTC连接，保持信令连接等待重新加入...");
-          teardownRtc(true);  // 清理RTC但保留localStream
-          // 保持WebSocket连接，当对端重新加入时会收到peer-joined消息
-          break;
-        case "offer":
-          log("收到 offer");
-          await handleOffer(msg.data.sdp);
-          break;
-        case "answer":
-          log("收到 answer");
-          await pc.setRemoteDescription(new RTCSessionDescription(msg.data.sdp));
-          break;
-        case "candidate":
-          if (msg.data?.candidate) {
-            await ensurePeer().addIceCandidate(new RTCIceCandidate(msg.data.candidate));
-          }
-          break;
-        case "error":
-          alert(msg.data?.message || "错误");
-          break;
-        case "pong":
-          // 收到心跳响应，清除超时定时器
-          if (heartbeatTimeout) {
-            clearTimeout(heartbeatTimeout);
-            heartbeatTimeout = null;
-          }
-          break;
-        default:
-          break;
+            break;
+          case "peer-left":
+            log("对端已离开，清理RTC连接，保持信令连接等待重新加入...");
+            teardownRtc(true);  // 清理RTC但保留localStream
+            // 保持WebSocket连接，当对端重新加入时会收到peer-joined消息
+            break;
+          case "offer":
+            log("收到 offer");
+            await handleOffer(msg.data.sdp);
+            break;
+          case "answer":
+            log("收到 answer");
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.data.sdp));
+            break;
+          case "candidate":
+            if (msg.data?.candidate) {
+              await ensurePeer().addIceCandidate(new RTCIceCandidate(msg.data.candidate));
+            }
+            break;
+          case "error":
+            alert(msg.data?.message || "错误");
+            break;
+          case "pong":
+            // 收到心跳响应，清除超时定时器
+            if (heartbeatTimeout) {
+              clearTimeout(heartbeatTimeout);
+              heartbeatTimeout = null;
+            }
+            break;
+          default:
+            break;
+        }
+      } catch (e) {
+        console.error('处理信令消息异常:', e);
+        log(`消息处理错误: ${e.message}`);
       }
     };
     ws.onclose = () => {
@@ -1407,6 +1475,9 @@
       statsMonitor = null;
     }
     bitrateAdjuster = null;
+
+    // 清理帧监控
+    stopFrameMonitor();
 
     if (dataChannel) {
       dataChannel.close();

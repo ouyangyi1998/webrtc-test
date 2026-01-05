@@ -252,7 +252,12 @@ object ConnectionManager {
         }
         
         override fun onMessage(message: com.example.remotecontrol.signaling.SignalMessage) {
-            handleSignalingMessage(message)
+            try {
+                handleSignalingMessage(message)
+            } catch (e: Exception) {
+                LogManager.e("处理信令消息异常: ${e.message}")
+                stateListeners.forEach { it.onError("信令处理异常: ${e.message}") }
+            }
         }
         
         override fun onError(error: String) {
@@ -387,6 +392,11 @@ object ConnectionManager {
                 
                 controlListeners.forEach { it.onQualityControl(fps, bitrate) }
                 LogManager.i("收到画质调整: ${fps}fps, ${bitrate/1024}kbps")
+            }
+            "request_keyframe" -> {
+                // 控制端检测到画面卡顿，请求发送关键帧
+                LogManager.i("收到关键帧请求")
+                webRTCManager?.requestKeyFrame()
             }
         }
     }
