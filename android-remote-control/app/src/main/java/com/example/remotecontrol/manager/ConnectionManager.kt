@@ -15,6 +15,13 @@ object ConnectionManager {
     private var signalingClient: SignalingClient? = null
     private var webRTCManager: WebRTCManager? = null
     private var configManager: ConfigManager? = null
+    private var networkMonitor: NetworkMonitor? = null
+    private var lastScreenCaptureIntent: android.content.Intent? = null
+    private var lastContext: Context? = null
+    
+    // ICE 重启限制
+    private var iceRestartAttempts = 0
+    private const val MAX_ICE_RESTART_ATTEMPTS = 5
     
     private val stateListeners = mutableListOf<ConnectionStateListener>()
     private val chatListeners = mutableListOf<ChatListener>()
@@ -90,11 +97,21 @@ object ConnectionManager {
         }
         
         configManager = config
+        lastScreenCaptureIntent = screenCaptureIntent
+        lastContext = context
+        iceRestartAttempts = 0  // 重置 ICE 重启计数
+        
         updateState(State.CONNECTING)
         updateStatus(wsStatus = "连接中...", overallStatus = "连接中...", 
                     roomId = config.roomId, nickname = config.nickname)
         
         LogManager.i("开始连接: ${config.signalUrl}, 房间: ${config.roomId}")
+        
+        // 注册网络监听
+        if (networkMonitor == null) {
+            networkMonitor = NetworkMonitor(context)
+            networkMonitor?.register(networkChangeListener)
+        }
         
         // 初始化 WebRTC
         webRTCManager = WebRTCManager(context, webRTCListener)
@@ -116,15 +133,50 @@ object ConnectionManager {
     fun disconnect() {
         LogManager.i("断开连接")
         
+        // 注销网络监听
+        networkMonitor?.unregister()
+        networkMonitor = null
+        
         signalingClient?.disconnect()
         signalingClient = null
         
         webRTCManager?.release()
         webRTCManager = null
         
+        iceRestartAttempts = 0
+        lastScreenCaptureIntent = null
+        lastContext = null
+        
         updateState(State.DISCONNECTED)
         updateStatus(wsStatus = "已断开", dcStatus = "未连接", 
                     iceStatus = "未初始化", overallStatus = "已停止")
+    }
+    
+    // ========== 网络变化监听 ==========
+    private val networkChangeListener = object : NetworkMonitor.NetworkChangeListener {
+        override fun onNetworkAvailable() {
+            LogManager.i("网络变化检测到新网络可用，尝试快速恢复...")
+            
+            // 关闭旧的 PeerConnection（IP 已变化，旧连接无效）
+            webRTCManager?.closePeerConnection()
+            iceRestartAttempts = 0
+            
+            // 如果 WebSocket 已断开，立即重连
+            if (signalingClient?.isConnected() != true) {
+                LogManager.i("WebSocket 未连接，立即重连信令服务器")
+                val config = configManager ?: return
+                signalingClient?.disconnect()
+                signalingClient = SignalingClient(config.signalUrl, signalingListener)
+                signalingClient?.connect()
+            }
+            
+            updateStatus(overallStatus = "网络恢复，重连中...")
+        }
+        
+        override fun onNetworkLost() {
+            LogManager.w("网络丢失")
+            updateStatus(overallStatus = "网络断开")
+        }
     }
     
     fun sendChatMessage(message: String) {
@@ -180,6 +232,11 @@ object ConnectionManager {
     private val signalingListener = object : SignalingClient.Listener {
         override fun onConnected() {
             LogManager.i("WebSocket 已连接")
+            
+            // P1: WS 重连后清理旧的 PeerConnection，避免状态混乱
+            webRTCManager?.closePeerConnection()
+            iceRestartAttempts = 0
+            
             updateStatus(wsStatus = "已连接", overallStatus = "等待加入房间...")
             
             val config = configManager ?: return
@@ -351,12 +408,26 @@ object ConnectionManager {
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED -> {
+                    // 连接成功，重置 ICE 重启计数
+                    iceRestartAttempts = 0
                     updateState(State.PEER_CONNECTED)
                     updateStatus(overallStatus = "已连接")
                 }
                 PeerConnection.IceConnectionState.FAILED -> {
-                    updateStatus(overallStatus = "连接失败")
-                    webRTCManager?.restartIce()
+                    // P1: ICE 重启次数限制
+                    if (iceRestartAttempts < MAX_ICE_RESTART_ATTEMPTS) {
+                        iceRestartAttempts++
+                        LogManager.i("ICE 连接失败，尝试重启 ($iceRestartAttempts/$MAX_ICE_RESTART_ATTEMPTS)")
+                        updateStatus(overallStatus = "重连中 ($iceRestartAttempts/$MAX_ICE_RESTART_ATTEMPTS)")
+                        webRTCManager?.restartIce()
+                    } else {
+                        LogManager.w("ICE 重启次数已达上限，等待网络恢复或信令重连")
+                        updateStatus(overallStatus = "连接失败，等待重连...")
+                    }
+                }
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
+                    LogManager.w("ICE 连接断开，等待恢复...")
+                    updateStatus(overallStatus = "连接恢复中...")
                 }
                 else -> {}
             }

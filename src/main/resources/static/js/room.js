@@ -44,7 +44,7 @@
   let heartbeatTimer = null;
   let heartbeatTimeout = null;
   const HEARTBEAT_INTERVAL = 30000;  // 30秒发送一次心跳
-  const HEARTBEAT_TIMEOUT = 10000;   // 10秒内没有响应则认为断开
+  const HEARTBEAT_TIMEOUT = 15000;   // P2: 15秒内没有响应则认为断开（从10s调整）
 
   // 视频流控制相关
   let statsMonitor = null;
@@ -70,6 +70,8 @@
 
       this.adjustCooldown = 5000;     // 5秒冷却
       this.lastAdjustTime = 0;
+      this.lastDowngradeTime = 0;     // P3: 降级时间记录
+      this.upgradeCooldown = 10000;   // P3: 降级后10秒内禁止升级
 
       // 状态计数器
       this.consecutiveBadSamples = 0;
@@ -127,16 +129,18 @@
         if (this.currentBitrate > this.minBitrate) {
           this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
           actionTaken = true;
+          this.lastDowngradeTime = now;  // P3: 记录降级时间
         }
         // 2. 如果码率已经很低，降低帧率以减少拥塞
         else if (this.currentFps > this.minFps) {
           this.currentFps = Math.max(this.minFps, this.currentFps - 5);
           actionTaken = true;
+          this.lastDowngradeTime = now;  // P3: 记录降级时间
         }
       }
 
-      // 升级策略
-      if (this.consecutiveGoodSamples >= 5) {
+      // 升级策略 - P3: 降级后10秒内禁止升级，避免震荡
+      if (this.consecutiveGoodSamples >= 5 && (now - this.lastDowngradeTime) > this.upgradeCooldown) {
         this.consecutiveBadSamples = 0;
         this.consecutiveGoodSamples = 0;
 
@@ -866,6 +870,14 @@
       reconnectAttempts = 0;
       connecting = false;
       log("WebSocket 已连接");
+      
+      // P1: 重连时清理旧的 PeerConnection，避免状态混乱
+      if (reconnect && pc) {
+        log("信令重连，清理旧的 RTC 连接");
+        teardownRtc(true);
+        iceRestartAttempts = 0;
+      }
+      
       ws.send(JSON.stringify({ type: "join", roomId, sender }));
 
       // 启动心跳检测
@@ -1733,6 +1745,26 @@
       toggleFullscreen();
     }
     // 注意：不再使用 F 键触发全屏，以免干扰远程控制的键盘输入
+  });
+
+  // ===== P0: 网络状态监听 =====
+  // 监听浏览器 online/offline 事件，实现 WiFi 切换快速恢复
+  window.addEventListener('offline', () => {
+    log('网络断开');
+    connState.textContent = '网络断开';
+  });
+
+  window.addEventListener('online', () => {
+    log('网络恢复，立即重连');
+    if (!manualLeave && (!ws || ws.readyState !== WebSocket.OPEN)) {
+      reconnectAttempts = 0;  // 重置重试计数，立即重连
+      // 清理旧的 RTC 连接（IP 已变化，旧连接无效）
+      if (pc) {
+        teardownRtc(true);
+        iceRestartAttempts = 0;
+      }
+      connectWs(true);
+    }
   });
 
 })(); 
