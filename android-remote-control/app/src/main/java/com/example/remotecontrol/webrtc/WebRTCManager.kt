@@ -2,6 +2,7 @@ package com.example.remotecontrol.webrtc
 
 import android.content.Context
 import android.util.Log
+import android.media.projection.MediaProjection
 import org.webrtc.*
 import java.nio.ByteBuffer
 
@@ -37,6 +38,10 @@ class WebRTCManager(
 
     private var remoteVideoWidth: Int = 1920
     private var remoteVideoHeight: Int = 1080
+    
+    private var localVideoTrack: VideoTrack? = null
+    private var surfaceTextureHelper: SurfaceTextureHelper? = null
+    private var videoCapturer: VideoCapturer? = null
 
     /**
      * 初始化 WebRTC
@@ -66,8 +71,34 @@ class WebRTCManager(
             .setVideoEncoderFactory(encoderFactory)
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
-
+        
         Log.d(TAG, "WebRTC initialized")
+    }
+
+    /**
+     * 创建屏幕共享 VideoTrack
+     */
+    fun createScreenCaptureVideoTrack(intent: android.content.Intent): VideoTrack? {
+        videoCapturer = createScreenCapturer(intent) ?: return null
+        
+        val videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast) 
+        surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBase?.eglBaseContext)
+        videoCapturer!!.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
+        videoCapturer!!.startCapture(remoteVideoWidth, remoteVideoHeight, 15)
+
+        val videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
+        videoTrack?.setEnabled(true)
+        this.localVideoTrack = videoTrack
+        Log.d(TAG, "Screen capture video track created")
+        return videoTrack
+    }
+
+    private fun createScreenCapturer(intent: android.content.Intent): VideoCapturer? {
+         return ScreenCapturerAndroid(intent, object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.e(TAG, "User revoked permission to capture the screen.")
+            }
+        })
     }
 
     /**
@@ -103,7 +134,7 @@ class WebRTCManager(
         }
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServerList).apply {
-            iceTransportPolicy = PeerConnection.IceTransportPolicy.ALL
+            iceTransportsType = PeerConnection.IceTransportsType.ALL
             bundlePolicy = PeerConnection.BundlePolicy.BALANCED
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             iceCandidatePoolSize = 0
@@ -173,6 +204,12 @@ class WebRTCManager(
 
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, observer)
         Log.d(TAG, "PeerConnection created")
+
+        // 添加本地视频流
+        localVideoTrack?.let { track ->
+            peerConnection?.addTrack(track, listOf("ARDAMS"))
+            Log.d(TAG, "Local video track added to PeerConnection")
+        }
 
         // 创建 DataChannel（作为发起方）
         createDataChannel()
@@ -284,10 +321,8 @@ class WebRTCManager(
      * 创建 Answer
      */
     private fun createAnswer() {
-        val constraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
-        }
+        // UNIFIED_PLAN 不需要设置 OfferToReceive 约束，方向由 transceiver 控制
+        val constraints = MediaConstraints()
 
         peerConnection?.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {
@@ -396,6 +431,22 @@ class WebRTCManager(
      */
     fun release() {
         closePeerConnection()
+        
+        // 释放屏幕捕获资源
+        try {
+            videoCapturer?.stopCapture()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping video capturer", e)
+        }
+        videoCapturer?.dispose()
+        videoCapturer = null
+        
+        surfaceTextureHelper?.dispose()
+        surfaceTextureHelper = null
+        
+        localVideoTrack?.dispose()
+        localVideoTrack = null
+        
         peerConnectionFactory?.dispose()
         peerConnectionFactory = null
         eglBase?.release()

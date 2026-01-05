@@ -62,34 +62,66 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
     
     // ========== 控制事件处理 ==========
     
+    // 拖动状态
+    private var isDragging = false
+    private var dragStartX = 0
+    private var dragStartY = 0
+    private var lastDragX = 0
+    private var lastDragY = 0
+    
     override fun onMouseControl(action: String, xRatio: Float, yRatio: Float, button: Int, deltaY: Float) {
         val x = (xRatio * screenWidth).toInt().coerceIn(0, screenWidth - 1)
         val y = (yRatio * screenHeight).toInt().coerceIn(0, screenHeight - 1)
         
         when (action) {
             "move" -> {
-                // 鼠标移动暂不处理（Android 没有光标概念）
+                // 如果正在拖动，更新位置（用于后续 mouseup 时执行滑动）
+                if (isDragging) {
+                    lastDragX = x
+                    lastDragY = y
+                }
             }
             "mousedown" -> {
-                // 只在 mousedown 时执行点击，不等 mouseup
                 when (button) {
-                    0 -> performClick(x, y)       // 左键点击
+                    0 -> {
+                        // 左键按下 - 开始拖动追踪
+                        isDragging = true
+                        dragStartX = x
+                        dragStartY = y
+                        lastDragX = x
+                        lastDragY = y
+                    }
                     2 -> performLongPress(x, y)   // 右键 -> 长按
                 }
             }
             "mouseup" -> {
-                // mouseup 不处理，避免重复点击
+                when (button) {
+                    0 -> {
+                        if (isDragging) {
+                            val dx = lastDragX - dragStartX
+                            val dy = lastDragY - dragStartY
+                            val distance = Math.sqrt((dx * dx + dy * dy).toDouble())
+                            
+                            if (distance < 20) {
+                                // 移动距离很小，视为点击
+                                performClick(dragStartX, dragStartY)
+                            } else {
+                                // 移动距离较大，执行滑动
+                                performSwipe(dragStartX, dragStartY, lastDragX, lastDragY, 200)
+                            }
+                            isDragging = false
+                        }
+                    }
+                }
             }
             "click" -> {
-                // 完整点击事件
                 performClick(x, y)
             }
             "dblclick" -> {
-                // 双击
                 performDoubleClick(x, y)
             }
             "wheel" -> {
-                // 滚轮 - 模拟滑动（注意：Web 端 deltaY 正值向下，需要反向模拟滑动）
+                // 滚轮 - 模拟滑动（Web 端 deltaY 正值向下）
                 performScroll(x, y, -deltaY)
             }
         }
@@ -99,14 +131,137 @@ class RemoteControlService : AccessibilityService(), ConnectionManager.ControlLi
         type: String, key: String, code: String,
         altKey: Boolean, ctrlKey: Boolean, metaKey: Boolean, shiftKey: Boolean
     ) {
-        if (type == "keydown") {
-            LogManager.i("键盘输入: key=$key, code=$code")
-            // Android AccessibilityService 不支持直接模拟键盘输入
-            // 对于文本输入，可以使用粘贴方式
-            if (key.length == 1 && !ctrlKey && !altKey && !metaKey) {
-                // 单字符输入（暂时日志记录）
-                LogManager.d("文本输入: $key")
+        if (type != "keydown") return
+        
+        LogManager.i("键盘输入: key=$key, code=$code, ctrl=$ctrlKey, meta=$metaKey")
+        
+        // 1. 快捷键处理
+        when {
+            // Escape / Android Back
+            key == "Escape" || code == "Escape" -> {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                LogManager.i("执行返回操作")
+                return
             }
+            // Backspace - 使用 AccessibilityNodeInfo 删除
+            key == "Backspace" || code == "Backspace" -> {
+                performBackspace()
+                return
+            }
+            // Enter
+            key == "Enter" || code == "Enter" -> {
+                performEnter()
+                return
+            }
+            // Home (Meta+H or Home key)
+            (metaKey && key.lowercase() == "h") || code == "Home" -> {
+                performGlobalAction(GLOBAL_ACTION_HOME)
+                LogManager.i("执行主页操作")
+                return
+            }
+            // Recent Apps (Meta+Tab)
+            metaKey && key == "Tab" -> {
+                performGlobalAction(GLOBAL_ACTION_RECENTS)
+                LogManager.i("执行最近应用操作")
+                return
+            }
+            // 方向键 - 暂不支持
+            code.startsWith("Arrow") -> {
+                LogManager.d("方向键暂不支持")
+                return
+            }
+        }
+        
+        // 2. 普通字符输入（通过剪贴板粘贴方式）
+        if (key.length == 1 && !ctrlKey && !altKey && !metaKey) {
+            performTextInput(key)
+        }
+    }
+    
+    /**
+     * 通过剪贴板粘贴方式输入文本
+     */
+    private fun performTextInput(text: String) {
+        try {
+            // 获取焦点节点
+            val focusedNode = findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focusedNode == null) {
+                LogManager.w("未找到输入焦点，无法输入文本")
+                return
+            }
+            
+            // 使用 ACTION_SET_TEXT（Android 5.0+）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                // 获取当前文本
+                val currentText = focusedNode.text?.toString() ?: ""
+                // 追加新字符
+                val newText = currentText + text
+                
+                val arguments = android.os.Bundle()
+                arguments.putCharSequence(
+                    android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    newText
+                )
+                focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                LogManager.d("输入文本: $text")
+            }
+            
+            focusedNode.recycle()
+        } catch (e: Exception) {
+            LogManager.e("输入文本失败: ${e.message}")
+        }
+    }
+    
+    /**
+     * 执行退格删除
+     */
+    private fun performBackspace() {
+        try {
+            val focusedNode = findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focusedNode == null) {
+                LogManager.w("未找到输入焦点")
+                return
+            }
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                val currentText = focusedNode.text?.toString() ?: ""
+                if (currentText.isNotEmpty()) {
+                    val newText = currentText.dropLast(1)
+                    val arguments = android.os.Bundle()
+                    arguments.putCharSequence(
+                        android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                        newText
+                    )
+                    focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                    LogManager.d("删除字符")
+                }
+            }
+            
+            focusedNode.recycle()
+        } catch (e: Exception) {
+            LogManager.e("删除失败: ${e.message}")
+        }
+    }
+    
+    /**
+     * 执行回车
+     */
+    private fun performEnter() {
+        // 尝试找到当前焦点的输入框并执行 ACTION_NEXT 或提交
+        try {
+            val focusedNode = findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focusedNode != null) {
+                // 尝试执行下一个焦点或提交动作
+                val result = focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY)
+                if (!result) {
+                    // 如果没有下一个，尝试点击（可能是搜索按钮等）
+                    focusedNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                }
+                focusedNode.recycle()
+                LogManager.d("执行回车")
+            }
+        } catch (e: Exception) {
+            LogManager.e("回车失败: ${e.message}")
         }
     }
     

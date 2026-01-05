@@ -81,7 +81,7 @@ object ConnectionManager {
         controlListeners.remove(listener)
     }
     
-    fun connect(context: Context, config: ConfigManager) {
+    fun connect(context: Context, config: ConfigManager, screenCaptureIntent: android.content.Intent) {
         if (currentState != State.DISCONNECTED) {
             LogManager.w("已经在连接中或已连接")
             return
@@ -97,6 +97,14 @@ object ConnectionManager {
         // 初始化 WebRTC
         webRTCManager = WebRTCManager(context, webRTCListener)
         webRTCManager?.initialize()
+        
+        // 创建屏幕共享视频轨道
+        val videoTrack = webRTCManager?.createScreenCaptureVideoTrack(screenCaptureIntent)
+        if (videoTrack != null) {
+            LogManager.i("屏幕共享视频轨道已创建")
+        } else {
+            LogManager.e("创建屏幕共享视频轨道失败")
+        }
         
         // 连接信令服务器
         signalingClient = SignalingClient(config.signalUrl, signalingListener)
@@ -188,27 +196,30 @@ object ConnectionManager {
                 updateState(State.SIGNALING_CONNECTED)
                 updateStatus(overallStatus = "等待控制端连接...")
                 
+                // 作为被控端（Host），等待 Web 端发送 offer
                 if (participants > 1) {
                     val config = configManager ?: return
-                    LogManager.i("房间已有成员，主动发起连接")
-                    val iceServers = config.getIceServers().map { 
-                        WebRTCManager.IceServerConfig(it.url, it.username, it.password)
-                    }
-                    webRTCManager?.createPeerConnection(iceServers)
-                    webRTCManager?.createOffer()
+                    LogManager.i("房间已有成员，等待对方 offer")
+                    // 注释掉主动发起 offer
+                    // val iceServers = config.getIceServers().map { 
+                    //     WebRTCManager.IceServerConfig(it.url, it.username, it.password)
+                    // }
+                    // webRTCManager?.createPeerConnection(iceServers)
+                    // webRTCManager?.createOffer()
                 }
             }
             
             "peer-joined" -> {
                 LogManager.i("对端加入: ${message.sender}")
-                // 创建 PeerConnection 并等待 offer
-                val config = configManager ?: return
-                val iceServers = config.getIceServers().map { 
-                    WebRTCManager.IceServerConfig(it.url, it.username, it.password)
-                }
-                webRTCManager?.createPeerConnection(iceServers)
-                LogManager.i("主动发起连接 (Offer)")
-                webRTCManager?.createOffer()
+                // 作为被控端（Host），等待 Web 端发送 offer
+                // 不主动创建 offer
+                // val config = configManager ?: return
+                // val iceServers = config.getIceServers().map { 
+                //     WebRTCManager.IceServerConfig(it.url, it.username, it.password)
+                // }
+                // webRTCManager?.createPeerConnection(iceServers)
+                // LogManager.i("主动发起连接 (Offer)")
+                // webRTCManager?.createOffer()
             }
             
             "peer-left" -> {

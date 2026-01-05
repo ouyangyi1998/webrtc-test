@@ -18,6 +18,13 @@
 - **高性能**：使用 WebRTC 原生推流，低延迟高画质
 - **智能重连**：WebSocket 和 WebRTC 双重断线重连机制
 
+### 📱 Android 客户端
+- **屏幕共享**：将 Android 屏幕实时共享到 Web 端
+- **远程控制**：支持点击、拖动、滑动、长按、滚轮
+- **键盘输入**：通过无障碍服务注入文本
+- **快捷键**：Escape=返回, Meta+H=主页, Meta+Tab=最近应用
+- **前台服务**：保持屏幕共享稳定运行
+
 ## 🚀 快速开始
 
 ### 1. 启动 Web 服务端
@@ -182,17 +189,22 @@ webrtc-test/
 ├── agent-java/                   # Java Agent 被控端
 │   ├── src/main/java/
 │   │   └── com/example/agent/
-│   │       ├── javafx/              # JavaFX UI (AgentAppFX, ConfigManager, LogManager)
+│   │       ├── javafx/              # JavaFX UI
 │   │       ├── AgentClient.java     # WebSocket 客户端
 │   │       ├── WebRTCManager.java   # WebRTC 管理
 │   │       ├── ScreenCaptureSource.java # 屏幕捕获
-│   │       ├── ControlHandler.java  # 输入控制
-│   │       └── Launcher.java        # 启动器
-│   ├── pom.xml
-│   ├── build-all.sh              # 多平台打包脚本
+│   │       └── ControlHandler.java  # 输入控制
 │   └── target/
 │       ├── webrtc-agent-macos-x86_64.jar
 │       └── webrtc-agent-macos-arm64.jar
+├── android-remote-control/       # Android 远程控制客户端
+│   ├── app/src/main/java/.../
+│   │   ├── service/
+│   │   │   ├── RemoteControlService.kt  # 无障碍服务
+│   │   │   └── ScreenCaptureService.kt  # 屏幕共享
+│   │   ├── webrtc/WebRTCManager.kt      # WebRTC 管理
+│   │   └── manager/ConnectionManager.kt # 连接管理
+│   └── README.md
 └── README.md
 ```
 

@@ -60,6 +60,32 @@ class ConfigFragment : Fragment(), ConnectionManager.ConnectionStateListener {
         LogManager.i("配置已保存")
     }
     
+    private val mediaProjectionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+            // 先启动前台服务
+            val serviceIntent = android.content.Intent(requireContext(), 
+                com.example.remotecontrol.service.ScreenCaptureService::class.java).apply {
+                action = com.example.remotecontrol.service.ScreenCaptureService.ACTION_START
+                putExtra(com.example.remotecontrol.service.ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(com.example.remotecontrol.service.ScreenCaptureService.EXTRA_DATA, result.data)
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                requireContext().startForegroundService(serviceIntent)
+            } else {
+                requireContext().startService(serviceIntent)
+            }
+            
+            // 稍等服务启动后再连接
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                ConnectionManager.connect(requireContext(), configManager, result.data!!)
+            }, 200)
+        } else {
+            Toast.makeText(requireContext(), "需要屏幕录制权限才能共享屏幕", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun setupListeners() {
         binding.btnSaveConfig.setOnClickListener {
             saveConfig()
@@ -68,7 +94,9 @@ class ConfigFragment : Fragment(), ConnectionManager.ConnectionStateListener {
         
         binding.btnConnect.setOnClickListener {
             saveConfig()  // 连接前自动保存
-            ConnectionManager.connect(requireContext(), configManager)
+            // 请求屏幕录制权限
+            val mediaProjectionManager = requireContext().getSystemService(android.media.projection.MediaProjectionManager::class.java)
+            mediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
         }
         
         binding.btnDisconnect.setOnClickListener {

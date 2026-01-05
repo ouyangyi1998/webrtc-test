@@ -1,6 +1,7 @@
 package com.example.remotecontrol.ui.remote
 
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
@@ -82,6 +83,15 @@ class RemoteActivity : AppCompatActivity() {
         }
     }
 
+    private val mediaProjectionLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            connectWithScreenCapture(result.data!!)
+        } else {
+            Toast.makeText(this, "需要屏幕录制权限才能使用", Toast.LENGTH_SHORT).show()
+            finish()
+        }
+    }
+
     private fun setupRemoteControl(serverUrl: String, roomId: String, nickname: String) {
         remoteControlManager = RemoteControlManager(
             context = this,
@@ -91,12 +101,18 @@ class RemoteActivity : AppCompatActivity() {
             listener = remoteControlListener
         )
 
-        // 初始化 SurfaceViewRenderer
-        val eglContext = remoteControlManager?.getEglContext()
-        // 注意：需要在 WebRTC 初始化后获取 EglContext
+        // 请求屏幕录制权限
+        val mediaProjectionManager = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+        mediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+    }
 
+    private fun connectWithScreenCapture(intent: android.content.Intent) {
+        // 初始化 SurfaceViewRenderer
+        // 注意：WebRTC 初始化移到 connect 内部，这里无法提前获取 EglContext
+        // 需等待连接建立或调整初始化顺序
+        
         // 开始连接
-        remoteControlManager?.connect()
+        remoteControlManager?.connect(intent)
     }
 
     private val remoteControlListener = object : RemoteControlManager.Listener {

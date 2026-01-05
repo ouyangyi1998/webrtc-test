@@ -53,7 +53,7 @@ class RemoteControlManager(
     /**
      * 初始化并连接
      */
-    fun connect() {
+    fun connect(screenCaptureIntent: android.content.Intent?) {
         if (connectionState != ConnectionState.DISCONNECTED) {
             Log.w(TAG, "Already connecting or connected")
             return
@@ -64,6 +64,18 @@ class RemoteControlManager(
         // 初始化 WebRTC
         webRTCManager = WebRTCManager(context, webRTCListener)
         webRTCManager?.initialize()
+        
+        // 创建并添加本地视频轨道（屏幕共享）
+        if (screenCaptureIntent != null) {
+            val videoTrack = webRTCManager?.createScreenCaptureVideoTrack(screenCaptureIntent)
+            if (videoTrack != null) {
+                // 将 Track 添加到 PeerConnection 需要在 createPeerConnection 之后
+                // 但这里我们只保存引用，由 WebRTCManager 在创建 PC 时添加
+                // 修正：WebRTCManager 需要调整以支持添加本地流
+                // 暂时方案：修改 WebRTCManager 逻辑，使其能持有本地 Track
+                Log.d(TAG, "Screen capture video track created")
+            }
+        }
 
         // 连接信令服务器
         signalingClient = SignalingClient(serverUrl, signalingListener)
@@ -215,18 +227,18 @@ class RemoteControlManager(
                 isJoined = true
 
                 if (participants > 1) {
-                    // 房间已有成员，主动创建 offer
-                    isInitiator = true
-                    webRTCManager?.createPeerConnection()
-                    webRTCManager?.createOffer()
+//                    // 房间已有成员，主动创建 offer
+//                    isInitiator = true
+//                    webRTCManager?.createPeerConnection()
+//                    webRTCManager?.createOffer()
                 }
             }
 
             "peer-joined" -> {
                 Log.d(TAG, "Peer joined: ${message.sender}")
-                isInitiator = true
-                webRTCManager?.createPeerConnection()
-                webRTCManager?.createOffer()
+//                isInitiator = true
+//                webRTCManager?.createPeerConnection()
+//                webRTCManager?.createOffer()
             }
 
             "peer-left" -> {
