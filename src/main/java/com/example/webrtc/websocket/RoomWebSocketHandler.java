@@ -18,13 +18,27 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class RoomWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(RoomWebSocketHandler.class);
 
+    // 延迟发送 peer-left 的时间（毫秒），给客户端重连的缓冲期
+    private static final long PEER_LEFT_DELAY_MS = 3000;
+
     private final RoomRegistry roomRegistry;
     private final ObjectMapper objectMapper;
+
+    // 用于延迟发送 peer-left 的调度器
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+    // 待发送的 peer-left 任务（key: roomId + ":" + sender）
+    private final Map<String, ScheduledFuture<?>> pendingPeerLeftTasks = new ConcurrentHashMap<>();
 
     public RoomWebSocketHandler(RoomRegistry roomRegistry, ObjectMapper objectMapper) {
         this.roomRegistry = roomRegistry;
@@ -99,6 +113,14 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         }
         log.info("session {} 加入房间 {}", session.getId(), roomId);
 
+        // 取消该用户之前可能待发送的 peer-left（用户快速重连的情况）
+        String taskKey = roomId + ":" + sender;
+        ScheduledFuture<?> pendingTask = pendingPeerLeftTasks.remove(taskKey);
+        if (pendingTask != null) {
+            pendingTask.cancel(false);
+            log.info("用户 {} 重连，取消待发送的 peer-left", sender);
+        }
+
         Map<String, Object> payload = new HashMap<>();
         payload.put("participants", roomRegistry.peersInRoom(roomId, null).size());
         SignalMessage ack = new SignalMessage("join-ack", roomId, "server", payload);
@@ -160,14 +182,54 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(@NonNull WebSocketSession session, @NonNull CloseStatus status) {
         String roomId = (String) session.getAttributes().get("roomId");
-        if (StringUtils.hasText(roomId) && !Boolean.TRUE.equals(session.getAttributes().get("leftNotified"))) {
-            try {
-                sendPeerLeft(session, roomId);
-                session.getAttributes().put("leftNotified", true);
-            } catch (IOException e) {
-                log.warn("通知房间 {} 成员离开失败", roomId, e);
-            }
-        }
+        String sender = (String) session.getAttributes().getOrDefault("sender", "peer");
+
+        // 先从房间移除该 session
         roomRegistry.remove(session);
+
+        if (StringUtils.hasText(roomId) && !Boolean.TRUE.equals(session.getAttributes().get("leftNotified"))) {
+            // 延迟发送 peer-left，给客户端重连的缓冲期
+            String taskKey = roomId + ":" + sender;
+
+            // 取消之前可能存在的同一用户的待发送任务
+            ScheduledFuture<?> existing = pendingPeerLeftTasks.remove(taskKey);
+            if (existing != null) {
+                existing.cancel(false);
+            }
+
+            // 创建延迟任务
+            ScheduledFuture<?> task = scheduler.schedule(() -> {
+                // 3秒后检查用户是否已重连
+                Set<WebSocketSession> currentPeers = roomRegistry.peersInRoom(roomId, null);
+                boolean userReconnected = currentPeers.stream()
+                        .anyMatch(s -> sender.equals(s.getAttributes().get("sender")));
+
+                if (!userReconnected) {
+                    // 用户未重连，发送 peer-left 给房间内其他成员
+                    log.info("用户 {} 离开房间 {}（延迟确认）", sender, roomId);
+                    SignalMessage left = new SignalMessage("peer-left", roomId, sender, null);
+                    try {
+                        String payload = objectMapper.writeValueAsString(left);
+                        for (WebSocketSession peer : currentPeers) {
+                            if (peer.isOpen()) {
+                                try {
+                                    peer.sendMessage(new TextMessage(payload));
+                                } catch (IOException e) {
+                                    log.warn("发送 peer-left 到 {} 失败", peer.getId(), e);
+                                }
+                            }
+                        }
+                    } catch (JsonProcessingException e) {
+                        log.error("序列化 peer-left 失败", e);
+                    }
+                } else {
+                    log.info("用户 {} 已重连房间 {}，跳过 peer-left", sender, roomId);
+                }
+                pendingPeerLeftTasks.remove(taskKey);
+            }, PEER_LEFT_DELAY_MS, TimeUnit.MILLISECONDS);
+
+            pendingPeerLeftTasks.put(taskKey, task);
+            log.debug("计划延迟发送 peer-left: {} ({}ms后)", taskKey, PEER_LEFT_DELAY_MS);
+        }
     }
 }

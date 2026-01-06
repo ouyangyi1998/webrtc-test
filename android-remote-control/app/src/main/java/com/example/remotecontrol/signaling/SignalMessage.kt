@@ -106,28 +106,35 @@ data class SignalMessage(
 
     // 获取 participants 数量（from join-ack）
     fun getParticipants(): Int {
-        return data?.get("participants")?.asInt ?: 1
+        val element = data?.get("participants")
+        return if (element != null && !element.isJsonNull) element.asInt else 1
     }
 
     // 获取 SDP 信息
     fun getSdp(): Pair<String, String>? {
         val sdpObj = data?.getAsJsonObject("sdp") ?: return null
-        val type = sdpObj.get("type")?.asString ?: return null
-        val sdp = sdpObj.get("sdp")?.asString ?: return null
-        return Pair(type, sdp)
+        val typeEl = sdpObj.get("type")
+        val sdpEl = sdpObj.get("sdp")
+        if (typeEl == null || typeEl.isJsonNull || sdpEl == null || sdpEl.isJsonNull) return null
+        return Pair(typeEl.asString, sdpEl.asString)
     }
 
     // 获取 ICE Candidate 信息
     fun getCandidate(): Triple<String, String?, Int>? {
         val candidateObj = data?.getAsJsonObject("candidate") ?: return null
-        val candidate = candidateObj.get("candidate")?.asString ?: return null
-        val sdpMid = candidateObj.get("sdpMid")?.asString
-        val sdpMLineIndex = candidateObj.get("sdpMLineIndex")?.asInt ?: 0
+        val candidateEl = candidateObj.get("candidate")
+        if (candidateEl == null || candidateEl.isJsonNull) return null
+        val candidate = candidateEl.asString
+        val sdpMidEl = candidateObj.get("sdpMid")
+        val sdpMid = if (sdpMidEl != null && !sdpMidEl.isJsonNull) sdpMidEl.asString else null
+        val sdpMLineIndexEl = candidateObj.get("sdpMLineIndex")
+        val sdpMLineIndex = if (sdpMLineIndexEl != null && !sdpMLineIndexEl.isJsonNull) sdpMLineIndexEl.asInt else 0
         return Triple(candidate, sdpMid, sdpMLineIndex)
     }
 
     // 获取错误消息
     fun getErrorMessage(): String {
-        return data?.get("message")?.asString ?: "Unknown error"
+        val msgEl = data?.get("message")
+        return if (msgEl != null && !msgEl.isJsonNull) msgEl.asString else "Unknown error"
     }
 }

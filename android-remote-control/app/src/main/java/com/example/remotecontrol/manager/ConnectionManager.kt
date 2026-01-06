@@ -1,6 +1,8 @@
 package com.example.remotecontrol.manager
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import com.example.remotecontrol.control.RemoteControlManager
 import com.example.remotecontrol.signaling.SignalingClient
 import com.example.remotecontrol.webrtc.WebRTCManager
@@ -22,6 +24,15 @@ object ConnectionManager {
     // ICE 重启限制
     private var iceRestartAttempts = 0
     private const val MAX_ICE_RESTART_ATTEMPTS = 5
+    
+    // ICE DISCONNECTED 超时处理
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var iceDisconnectTimeoutRunnable: Runnable? = null
+    private const val ICE_DISCONNECT_TIMEOUT_MS = 5000L
+    
+    // peer-left 延迟处理（与服务器端配合）
+    private var peerLeftTimeoutRunnable: Runnable? = null
+    private const val PEER_LEFT_DELAY_MS = 3000L
     
     private val stateListeners = mutableListOf<ConnectionStateListener>()
     private val chatListeners = mutableListOf<ChatListener>()
@@ -157,17 +168,28 @@ object ConnectionManager {
         override fun onNetworkAvailable() {
             LogManager.i("网络变化检测到新网络可用，尝试快速恢复...")
             
+            // 清除 ICE 超时定时器
+            iceDisconnectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+            
             // 关闭旧的 PeerConnection（IP 已变化，旧连接无效）
             webRTCManager?.closePeerConnection()
             iceRestartAttempts = 0
             
+            val config = configManager ?: return
+            val context = lastContext ?: return
+            val intent = lastScreenCaptureIntent ?: return
+            
             // 如果 WebSocket 已断开，立即重连
             if (signalingClient?.isConnected() != true) {
                 LogManager.i("WebSocket 未连接，立即重连信令服务器")
-                val config = configManager ?: return
                 signalingClient?.disconnect()
                 signalingClient = SignalingClient(config.signalUrl, signalingListener)
                 signalingClient?.connect()
+                // 信令连接成功后会自动 join room 并重建 PeerConnection
+            } else {
+                // WebSocket 仍然连接，直接重建 PeerConnection
+                LogManager.i("WebSocket 仍在连接，直接重建 PeerConnection")
+                rebuildPeerConnection(config)
             }
             
             updateStatus(overallStatus = "网络恢复，重连中...")
@@ -175,7 +197,34 @@ object ConnectionManager {
         
         override fun onNetworkLost() {
             LogManager.w("网络丢失")
+            // 清除 ICE 超时定时器，避免无网络时触发重试
+            iceDisconnectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
             updateStatus(overallStatus = "网络断开")
+        }
+    }
+    
+    /**
+     * 重建 PeerConnection（网络恢复后使用）
+     */
+    private fun rebuildPeerConnection(config: ConfigManager) {
+        val iceServers = buildIceServers()
+        webRTCManager?.createPeerConnection(iceServers)
+        LogManager.i("PeerConnection 已重建，等待对端重新协商")
+        
+        // 主动发起 offer（因为 Android 端是被控端，有视频流）
+        webRTCManager?.createOffer()
+    }
+    
+    private fun buildIceServers(): List<WebRTCManager.IceServerConfig> {
+        val config = configManager ?: return listOf(
+            WebRTCManager.IceServerConfig("stun:stun.l.google.com:19302")
+        )
+        
+        // 使用 ConfigManager 已有的 getIceServers() 方法
+        return config.getIceServers().map { 
+            WebRTCManager.IceServerConfig(it.url, it.username, it.password) 
+        }.ifEmpty {
+            listOf(WebRTCManager.IceServerConfig("stun:stun.l.google.com:19302"))
         }
     }
     
@@ -289,25 +338,46 @@ object ConnectionManager {
             
             "peer-joined" -> {
                 LogManager.i("对端加入: ${message.sender}")
-                // 作为被控端（Host），等待 Web 端发送 offer
-                // 不主动创建 offer
-                // val config = configManager ?: return
-                // val iceServers = config.getIceServers().map { 
-                //     WebRTCManager.IceServerConfig(it.url, it.username, it.password)
-                // }
-                // webRTCManager?.createPeerConnection(iceServers)
-                // LogManager.i("主动发起连接 (Offer)")
-                // webRTCManager?.createOffer()
+                
+                // 取消待执行的 peer-left 清理任务（对端快速重连）
+                peerLeftTimeoutRunnable?.let {
+                    mainHandler.removeCallbacks(it)
+                    peerLeftTimeoutRunnable = null
+                    LogManager.i("对端重连，取消待执行的连接清理")
+                }
+                
+                // 对端重新加入（可能是网络切换或刷新），清理旧连接
+                // 这样当收到新的 offer 时会创建新的 PeerConnection
+                webRTCManager?.closePeerConnection()
+                updateStatus(dcStatus = "未连接", iceStatus = "对端重连", overallStatus = "等待信令协商...")
             }
             
             "peer-left" -> {
-                LogManager.i("对端离开: ${message.sender}")
-                webRTCManager?.closePeerConnection()
-                updateStatus(dcStatus = "未连接", iceStatus = "对端已离开", overallStatus = "等待控制端...")
+                LogManager.i("对端离开: ${message.sender}，延迟处理")
+                
+                // 延迟处理 peer-left，给对端重连的缓冲时间
+                peerLeftTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                peerLeftTimeoutRunnable = Runnable {
+                    LogManager.i("对端确认离开（延迟后），清理连接")
+                    webRTCManager?.closePeerConnection()
+                    updateStatus(dcStatus = "未连接", iceStatus = "对端已离开", overallStatus = "等待控制端...")
+                    peerLeftTimeoutRunnable = null
+                }
+                mainHandler.postDelayed(peerLeftTimeoutRunnable!!, PEER_LEFT_DELAY_MS)
+                
+                updateStatus(overallStatus = "对端可能重连中...")
             }
             
             "offer" -> {
                 LogManager.i("收到 offer")
+                
+                // 取消待执行的 peer-left 清理任务
+                peerLeftTimeoutRunnable?.let {
+                    mainHandler.removeCallbacks(it)
+                    peerLeftTimeoutRunnable = null
+                    LogManager.i("收到 offer，取消待执行的连接清理")
+                }
+                
                 val sdp = message.getSdp()
                 if (sdp != null) {
                     val config = configManager ?: return
@@ -398,6 +468,13 @@ object ConnectionManager {
                 LogManager.i("收到关键帧请求")
                 webRTCManager?.requestKeyFrame()
             }
+            "jitter_adjust" -> {
+                // 控制端请求调整 Jitter Buffer
+                val rtt = json.get("rtt")?.asInt ?: 0
+                val jitter = json.get("jitter")?.asDouble ?: 0.0
+                LogManager.d("收到 Jitter Buffer 调整请求: RTT=${rtt}ms, jitter=${jitter}ms")
+                webRTCManager?.adjustJitterBuffer(rtt, jitter)
+            }
         }
     }
     
@@ -438,6 +515,23 @@ object ConnectionManager {
                 PeerConnection.IceConnectionState.DISCONNECTED -> {
                     LogManager.w("ICE 连接断开，等待恢复...")
                     updateStatus(overallStatus = "连接恢复中...")
+                    
+                    // 清除之前的超时任务
+                    iceDisconnectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                    
+                    // 设置5秒超时，如果仍然断开则尝试ICE重启
+                    iceDisconnectTimeoutRunnable = Runnable {
+                        val currentState = webRTCManager?.getIceConnectionState()
+                        if (currentState == PeerConnection.IceConnectionState.DISCONNECTED) {
+                            LogManager.i("ICE DISCONNECTED 超时(5s)，尝试重启")
+                            if (iceRestartAttempts < MAX_ICE_RESTART_ATTEMPTS) {
+                                iceRestartAttempts++
+                                updateStatus(overallStatus = "ICE重连中 ($iceRestartAttempts/$MAX_ICE_RESTART_ATTEMPTS)")
+                                webRTCManager?.restartIce()
+                            }
+                        }
+                    }
+                    mainHandler.postDelayed(iceDisconnectTimeoutRunnable!!, ICE_DISCONNECT_TIMEOUT_MS)
                 }
                 else -> {}
             }

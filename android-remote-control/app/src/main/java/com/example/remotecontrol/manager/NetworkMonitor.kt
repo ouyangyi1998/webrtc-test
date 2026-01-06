@@ -33,9 +33,19 @@ class NetworkMonitor(private val context: Context) {
     private var listener: NetworkChangeListener? = null
     
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        private var networkLostHandler: android.os.Handler? = null
+        private var pendingNetworkLost: Runnable? = null
+        
         override fun onAvailable(network: Network) {
             val networkId = network.toString()
             LogManager.i("[$TAG] 网络可用: $networkId")
+            
+            // 取消待发送的网络丢失通知
+            pendingNetworkLost?.let {
+                networkLostHandler?.removeCallbacks(it)
+                pendingNetworkLost = null
+                LogManager.d("[$TAG] 取消待发送的网络丢失通知（网络快速恢复）")
+            }
             
             // 只有在网络ID变化时才触发重连（避免首次注册时误触发）
             if (lastNetworkId != null && lastNetworkId != networkId) {
@@ -47,7 +57,19 @@ class NetworkMonitor(private val context: Context) {
         
         override fun onLost(network: Network) {
             LogManager.w("[$TAG] 网络丢失: $network")
-            listener?.onNetworkLost()
+            
+            // 延迟500ms再触发网络丢失，避免WiFi切换时短暂断连误触发
+            if (networkLostHandler == null) {
+                networkLostHandler = android.os.Handler(android.os.Looper.getMainLooper())
+            }
+            
+            pendingNetworkLost?.let { networkLostHandler?.removeCallbacks(it) }
+            pendingNetworkLost = Runnable {
+                LogManager.w("[$TAG] 网络丢失确认（延迟后）")
+                listener?.onNetworkLost()
+                pendingNetworkLost = null
+            }
+            networkLostHandler?.postDelayed(pendingNetworkLost!!, 500)
         }
         
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {

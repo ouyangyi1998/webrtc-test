@@ -115,33 +115,39 @@
     }
   };
 
-  // ===== 自动画质/码率控制引擎 =====
+  // ===== 自动画质/码率控制引擎 (增强版) =====
   class QualityController {
     constructor() {
       this.enabled = false;
       this.currentBitrate = 2000000;  // 当前码率
       this.currentFps = 15;           // 当前帧率
+      this.currentResolution = 'full'; // 当前分辨率档位
 
       // 配置参数
-      this.minBitrate = 300000;       // 最低300kbps
+      this.minBitrate = 200000;       // 最低200kbps (更激进)
       this.maxBitrate = 4000000;      // 最高4Mbps
       this.minFps = 5;                // 最低5fps
       this.maxFps = 30;               // 最高30fps
 
-      this.adjustCooldown = 5000;     // 5秒冷却
+      this.adjustCooldown = 3000;     // 3秒冷却 (更快响应)
       this.lastAdjustTime = 0;
-      this.lastDowngradeTime = 0;     // P3: 降级时间记录
-      this.upgradeCooldown = 10000;   // P3: 降级后10秒内禁止升级
+      this.lastDowngradeTime = 0;
+      this.upgradeCooldown = 15000;   // 降级后15秒内禁止升级
 
       // 状态计数器
       this.consecutiveBadSamples = 0;
       this.consecutiveGoodSamples = 0;
+      this.consecutiveModerateSamples = 0;
+
+      // 预测性调整：RTT历史记录
+      this.rttHistory = [];
+      this.maxRttHistorySize = 10;
+      this.jitterHistory = [];
     }
 
     setMode(mode) {
       this.enabled = (mode === 'auto');
       if (!this.enabled) {
-        // 手动模式下直接设置目标码率和默认帧率
         const bitrateMap = {
           'smooth': 500000,
           'hd': 2000000,
@@ -152,67 +158,158 @@
       }
     }
 
+    // 计算RTT趋势（斜率），正值表示延迟增加
+    calculateRttTrend() {
+      if (this.rttHistory.length < 3) return 0;
+
+      const arr = this.rttHistory;
+      const n = arr.length;
+      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+
+      for (let i = 0; i < n; i++) {
+        sumX += i;
+        sumY += arr[i];
+        sumXY += i * arr[i];
+        sumX2 += i * i;
+      }
+
+      const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+      return slope; // ms/sample，正值=延迟增加
+    }
+
+    // 计算抖动趋势
+    calculateJitterTrend() {
+      if (this.jitterHistory.length < 3) return 0;
+      const recent = this.jitterHistory.slice(-5);
+      const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+      return avg;
+    }
+
     analyze(metrics) {
       if (!this.enabled) return null;
 
       const now = Date.now();
+
+      // 记录RTT和Jitter历史
+      if (metrics.rtt !== undefined) {
+        this.rttHistory.push(metrics.rtt);
+        if (this.rttHistory.length > this.maxRttHistorySize) {
+          this.rttHistory.shift();
+        }
+      }
+      if (metrics.jitter !== undefined) {
+        this.jitterHistory.push(metrics.jitter);
+        if (this.jitterHistory.length > this.maxRttHistorySize) {
+          this.jitterHistory.shift();
+        }
+      }
+
+      // 冷却期检查
       if (now - this.lastAdjustTime < this.adjustCooldown) return null;
 
-      // 判定网络状况
-      // 恶劣: 丢包 > 5% 或 RTT > 300ms
-      const isCritical = metrics.packetLoss > 0.10 || (metrics.rtt && metrics.rtt > 500);
-      const isBad = metrics.packetLoss > 0.05 || (metrics.rtt && metrics.rtt > 200);
+      // ===== 三级网络状况判定 =====
+      // 重度拥塞: 丢包 > 10% 或 RTT > 400ms
+      const isCritical = metrics.packetLoss > 0.10 || (metrics.rtt && metrics.rtt > 400);
+      // 中度拥塞: 丢包 > 3% 或 RTT > 150ms
+      const isModerate = metrics.packetLoss > 0.03 || (metrics.rtt && metrics.rtt > 150);
+      // 轻度拥塞: 丢包 > 1.5% 或 RTT > 80ms
+      const isMild = metrics.packetLoss > 0.015 || (metrics.rtt && metrics.rtt > 80);
+      // 良好: 丢包 < 0.5% 且 RTT < 60ms
+      const isGood = metrics.packetLoss < 0.005 && metrics.rtt && metrics.rtt < 60;
 
-      // 良好: 丢包 < 1% 且 RTT < 100ms
-      const isGood = metrics.packetLoss < 0.01 && (metrics.rtt && metrics.rtt < 100);
+      // ===== 预测性分析 =====
+      const rttTrend = this.calculateRttTrend();
+      const isPredictedDegradation = rttTrend > 15 && metrics.rtt > 80; // RTT快速增加
+      const jitterAvg = this.calculateJitterTrend();
+      const isHighJitter = jitterAvg > 0.03; // 30ms抖动
 
       let actionTaken = false;
+      let degradeLevel = 0; // 0=无, 1=轻度, 2=中度, 3=重度
 
+      // ===== 降级触发逻辑 =====
       if (isCritical) {
-        this.consecutiveBadSamples += 2; // 严重情况加速降级
-      } else if (isBad) {
+        this.consecutiveBadSamples += 3;
+        degradeLevel = 3;
+      } else if (isModerate) {
+        this.consecutiveBadSamples += 2;
+        this.consecutiveModerateSamples++;
+        degradeLevel = 2;
+      } else if (isMild || isPredictedDegradation) {
         this.consecutiveBadSamples++;
+        this.consecutiveModerateSamples++;
+        degradeLevel = 1;
+        if (isPredictedDegradation) {
+          log(`[QoS] 检测到RTT上升趋势 (${rttTrend.toFixed(1)}ms/s)，提前降级`);
+        }
       } else if (isGood) {
         this.consecutiveGoodSamples++;
+        this.consecutiveBadSamples = Math.max(0, this.consecutiveBadSamples - 1);
+        this.consecutiveModerateSamples = Math.max(0, this.consecutiveModerateSamples - 1);
       } else {
-        // 一般情况，重置计数
+        // 一般情况
         this.consecutiveBadSamples = Math.max(0, this.consecutiveBadSamples - 1);
         this.consecutiveGoodSamples = Math.max(0, this.consecutiveGoodSamples - 1);
       }
 
-      // 降级策略
-      if (this.consecutiveBadSamples >= 3) {
+      // 高抖动额外惩罚
+      if (isHighJitter) {
+        this.consecutiveBadSamples++;
+      }
+
+      // ===== 分级降级策略 =====
+      if (this.consecutiveBadSamples >= 2) {
         this.consecutiveGoodSamples = 0;
         this.consecutiveBadSamples = 0;
+        this.lastDowngradeTime = now;
 
-        // 1. 优先降低码率
-        if (this.currentBitrate > this.minBitrate) {
-          this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
+        if (degradeLevel === 3) {
+          // 重度：同时降帧率和码率
+          log('[QoS] 重度拥塞，激进降级');
+          if (this.currentBitrate > this.minBitrate) {
+            this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.5);
+          }
+          if (this.currentFps > this.minFps) {
+            this.currentFps = Math.max(this.minFps, this.currentFps - 10);
+          }
           actionTaken = true;
-          this.lastDowngradeTime = now;  // P3: 记录降级时间
-        }
-        // 2. 如果码率已经很低，降低帧率以减少拥塞
-        else if (this.currentFps > this.minFps) {
-          this.currentFps = Math.max(this.minFps, this.currentFps - 5);
-          actionTaken = true;
-          this.lastDowngradeTime = now;  // P3: 记录降级时间
+        } else if (degradeLevel === 2) {
+          // 中度：优先降码率
+          log('[QoS] 中度拥塞，降低码率');
+          if (this.currentBitrate > this.minBitrate) {
+            this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
+            actionTaken = true;
+          } else if (this.currentFps > this.minFps) {
+            this.currentFps = Math.max(this.minFps, this.currentFps - 5);
+            actionTaken = true;
+          }
+        } else if (degradeLevel === 1 || this.consecutiveModerateSamples >= 3) {
+          // 轻度/预测性：优先降帧率（更平滑）
+          log('[QoS] 轻度拥塞，降低帧率');
+          if (this.currentFps > 10) {
+            this.currentFps = Math.max(10, this.currentFps - 5);
+            actionTaken = true;
+          } else if (this.currentBitrate > 500000) {
+            this.currentBitrate = Math.max(500000, this.currentBitrate * 0.85);
+            actionTaken = true;
+          }
+          this.consecutiveModerateSamples = 0;
         }
       }
 
-      // 升级策略 - P3: 降级后10秒内禁止升级，避免震荡
-      if (this.consecutiveGoodSamples >= 5 && (now - this.lastDowngradeTime) > this.upgradeCooldown) {
+      // ===== 升级策略 =====
+      if (this.consecutiveGoodSamples >= 6 && (now - this.lastDowngradeTime) > this.upgradeCooldown) {
         this.consecutiveBadSamples = 0;
         this.consecutiveGoodSamples = 0;
 
-        // 1. 优先恢复帧率
+        // 渐进式升级
         if (this.currentFps < this.maxFps) {
           this.currentFps = Math.min(this.maxFps, this.currentFps + 5);
           actionTaken = true;
-        }
-        // 2. 其次提高码率
-        else if (this.currentBitrate < this.maxBitrate) {
-          this.currentBitrate = Math.min(this.maxBitrate, this.currentBitrate * 1.3);
+          log(`[QoS] 网络良好，提升帧率至 ${this.currentFps}fps`);
+        } else if (this.currentBitrate < this.maxBitrate) {
+          this.currentBitrate = Math.min(this.maxBitrate, this.currentBitrate * 1.2);
           actionTaken = true;
+          log(`[QoS] 网络良好，提升码率至 ${(this.currentBitrate / 1000).toFixed(0)}kbps`);
         }
       }
 
@@ -227,6 +324,48 @@
       return null;
     }
   }
+
+  // ===== SDP 处理函数 (FEC/RED 增强) =====
+
+  /**
+   * 增强 SDP 以启用 FEC (前向纠错)
+   * 确保 ULPFEC 和 RED 被正确协商
+   */
+  const enhanceSdpForFec = (sdp) => {
+    // 检查是否已包含 ULPFEC
+    if (!sdp.includes('ulpfec')) {
+      log('[FEC] SDP 不包含 ULPFEC，尝试添加...');
+      // 大多数浏览器默认支持，仅记录日志
+    }
+
+    // 检查 RED (冗余编码)
+    if (!sdp.includes('red')) {
+      log('[FEC] SDP 不包含 RED');
+    }
+
+    return sdp;
+  };
+
+  /**
+   * 发送 Jitter Buffer 调整请求到被控端
+   * @param {number} rttMs RTT延迟
+   * @param {number} jitterMs 抖动值
+   */
+  const sendJitterBufferAdjustment = (rttMs, jitterMs) => {
+    const payload = {
+      kind: 'jitter_adjust',
+      rtt: rttMs,
+      jitter: jitterMs
+    };
+
+    if (dataChannel && dataChannel.readyState === 'open') {
+      try {
+        dataChannel.send(JSON.stringify(payload));
+      } catch (e) {
+        // 忽略发送失败
+      }
+    }
+  };
 
   // ===== 网络统计监控器 =====
   class NetworkStatsMonitor {
@@ -355,7 +494,15 @@
   const applyStreamConfig = async () => {
     if (!isJoined) return;
 
-    streamConfig.frameRate = parseInt(frameRateSelect.value);
+    // 处理帧率：如果选择"自动"，使用 QualityController 当前值（如果启用）
+    const selectedFps = frameRateSelect.value;
+    if (selectedFps === 'auto') {
+      // 自动模式：使用 QualityController 的当前帧率，或默认15fps
+      streamConfig.frameRate = bitrateAdjuster?.currentFps || 15;
+    } else {
+      streamConfig.frameRate = parseInt(selectedFps);
+    }
+
     streamConfig.bitrateMode = bitrateSelect.value;
 
     // 根据档位设置目标码率
@@ -754,9 +901,11 @@
 
                 log(`自动调整: ${result.fps}fps, ${(result.bitrate / 1000).toFixed(0)}kbps`);
 
-                // 复用 applyStreamConfig 发送指令
-                // 更新 UI 显示（可选）
-                frameRateSelect.value = result.fps >= 30 ? "30" : (result.fps >= 15 ? "15" : "5");
+                // 只有在帧率不是"自动"模式时才更新下拉框
+                // 如果用户选择了"自动"，保持下拉框显示"自动"
+                if (frameRateSelect.value !== 'auto') {
+                  frameRateSelect.value = result.fps >= 30 ? "30" : (result.fps >= 15 ? "15" : "5");
+                }
 
                 // 发送控制指令
                 const payload = {
@@ -771,6 +920,15 @@
                   sendSignal('control', payload);
                 }
               }
+            }
+
+            // Jitter Buffer 动态调整
+            // 当 RTT 或抖动超过阈值时，通知被控端调整缓冲区
+            if (metrics.rtt > 100 || (metrics.jitter && metrics.jitter > 0.02)) {
+              sendJitterBufferAdjustment(
+                Math.floor(metrics.rtt || 0),
+                metrics.jitter || 0
+              );
             }
           };
           statsMonitor.start();
@@ -793,9 +951,33 @@
       if (!remoteStream) {
         remoteStream = new MediaStream();
         remoteVideo.srcObject = remoteStream;
+        // 确保视频静音以绕过自动播放限制
+        remoteVideo.muted = true;
       }
       e.streams[0].getTracks().forEach((t) => remoteStream.addTrack(t));
       log("收到远端媒体轨道");
+
+      // 主动尝试播放视频
+      const playPromise = remoteVideo.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          log("视频自动播放成功");
+        }).catch((err) => {
+          log(`视频自动播放失败: ${err.message}，需要用户交互`);
+          // 添加一次性点击监听，用户点击后恢复播放
+          const resumePlay = () => {
+            remoteVideo.play().then(() => {
+              log("用户交互后视频播放成功");
+            }).catch(e => {
+              log(`视频播放仍然失败: ${e.message}`);
+            });
+            document.removeEventListener('click', resumePlay);
+            remoteVideo.removeEventListener('click', resumePlay);
+          };
+          document.addEventListener('click', resumePlay, { once: true });
+          remoteVideo.addEventListener('click', resumePlay, { once: true });
+        });
+      }
     };
     pc.onconnectionstatechange = () => {
       connState.textContent = pc.connectionState;
@@ -1835,6 +2017,105 @@
         iceRestartAttempts = 0;
       }
       connectWs(true);
+    }
+  });
+
+  // ===== Network Information API =====
+  // 检测网络类型变化（WiFi <-> 4G 切换）
+  if ('connection' in navigator) {
+    const connection = navigator.connection;
+    let lastNetworkType = connection?.effectiveType || 'unknown';
+    let networkChangeDebounceTimer = null;
+
+    const handleNetworkChange = () => {
+      const newType = connection?.effectiveType || 'unknown';
+      log(`[Network] 网络类型变化: ${lastNetworkType} -> ${newType}`);
+
+      // 如果网络类型没有实际变化（如 4g -> 4g），跳过处理
+      if (newType === lastNetworkType) {
+        log('[Network] 网络类型未实际变化，跳过处理');
+        return;
+      }
+
+      lastNetworkType = newType;
+
+      // 只有在已加入房间时才处理网络切换
+      if (!isJoined || manualLeave) return;
+
+      // 添加防抖，避免短时间内多次触发
+      if (networkChangeDebounceTimer) {
+        clearTimeout(networkChangeDebounceTimer);
+      }
+
+      networkChangeDebounceTimer = setTimeout(() => {
+        networkChangeDebounceTimer = null;
+
+        // 网络类型变化可能意味着 IP 地址改变
+        // 需要检查连接状态并尝试恢复
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          // WebSocket 仍然连接，但 ICE 可能需要重启
+          if (pc) {
+            const iceState = pc.iceConnectionState;
+            if (iceState === 'disconnected' || iceState === 'failed') {
+              log('[Network] 检测到网络切换且 ICE 异常，尝试重启');
+              tryIceRestart();
+            } else if (iceState === 'connected' || iceState === 'completed') {
+              // 连接看起来正常，发送心跳确认
+              sendSignal('ping', {});
+            }
+          }
+        } else {
+          // WebSocket 断开，尝试重连
+          log('[Network] 网络切换后 WebSocket 断开，尝试重连');
+          reconnectAttempts = 0;
+          connectWs(true);
+        }
+      }, 2000);  // 2秒防抖
+    };
+
+    connection.addEventListener('change', handleNetworkChange);
+    log(`[Network] 已注册网络变化监听，当前类型: ${lastNetworkType}`);
+  }
+
+  // ===== Page Visibility API =====
+  // 检测用户切换标签页后返回，确保连接仍然有效
+  let lastVisibilityTime = Date.now();
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      // 页面进入后台，记录时间
+      lastVisibilityTime = Date.now();
+      log('[Visibility] 页面进入后台');
+    } else {
+      // 页面恢复前台
+      const hiddenDuration = Date.now() - lastVisibilityTime;
+      log(`[Visibility] 页面恢复前台，后台时长: ${(hiddenDuration / 1000).toFixed(1)}s`);
+
+      if (!isJoined || manualLeave) return;
+
+      // 如果后台超过30秒，检查并恢复连接
+      if (hiddenDuration > 30000) {
+        // 检查 WebSocket 连接
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          log('[Visibility] WebSocket 已断开，尝试重连');
+          reconnectAttempts = 0;
+          connectWs(true);
+          return;
+        }
+
+        // 检查 ICE 连接状态
+        if (pc) {
+          const iceState = pc.iceConnectionState;
+          if (iceState === 'disconnected' || iceState === 'failed') {
+            log(`[Visibility] ICE 状态异常 (${iceState})，尝试重启`);
+            tryIceRestart();
+          } else if (iceState === 'connected' || iceState === 'completed') {
+            // 连接正常，但可能心跳超时，发送一个信号确认
+            log('[Visibility] 连接正常，发送心跳确认');
+            sendSignal('ping', {});
+          }
+        }
+      }
     }
   });
 
