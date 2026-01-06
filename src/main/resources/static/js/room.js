@@ -1048,7 +1048,11 @@
   };
 
   const connectWs = async (isReconnect = false) => {
-    if (connecting || (ws && ws.readyState === WebSocket.OPEN)) return;
+    log(`[connectWs] 尝试连接, isReconnect=${isReconnect}, connecting=${connecting}, ws=${ws ? 'exists' : 'null'}, wsState=${ws?.readyState}`);
+    if (connecting || (ws && ws.readyState === WebSocket.OPEN)) {
+      log(`[connectWs] 跳过: connecting=${connecting}, wsOpen=${ws?.readyState === WebSocket.OPEN}`);
+      return;
+    }
     const reconnect = isReconnect === true;
     // #region agent log
     fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
@@ -1162,11 +1166,29 @@
             break;
           case "answer":
             log("收到 answer");
+            // 检查 PeerConnection 状态，只有在 have-local-offer 状态才能设置 answer
+            if (!pc) {
+              log("忽略 answer: PeerConnection 不存在");
+              break;
+            }
+            if (pc.signalingState !== 'have-local-offer') {
+              log(`忽略 answer: 当前状态为 ${pc.signalingState}，需要 have-local-offer`);
+              break;
+            }
             await pc.setRemoteDescription(new RTCSessionDescription(msg.data.sdp));
             break;
           case "candidate":
             if (msg.data?.candidate) {
-              await ensurePeer().addIceCandidate(new RTCIceCandidate(msg.data.candidate));
+              // 检查 PeerConnection 是否存在且已设置 remoteDescription
+              if (!pc) {
+                log("忽略 candidate: PeerConnection 不存在");
+                break;
+              }
+              if (!pc.remoteDescription) {
+                log("忽略 candidate: remoteDescription 尚未设置");
+                break;
+              }
+              await pc.addIceCandidate(new RTCIceCandidate(msg.data.candidate));
             }
             break;
           case "error":
@@ -1689,9 +1711,26 @@
 
         // 设置超时检测
         heartbeatTimeout = setTimeout(() => {
-          log("心跳超时，WebSocket 可能已断开");
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.close();
+          log(`心跳超时，WebSocket 可能已断开 (wsState=${ws?.readyState})`);
+
+          // 强制清理并重连
+          if (ws) {
+            const oldWs = ws;
+            ws = null;
+            try {
+              oldWs.close();
+            } catch (e) { }
+          }
+
+          // 清理 RTC 连接
+          teardownRtc(true);
+
+          // 立即尝试重连
+          if (isJoined && !manualLeave) {
+            log("心跳超时，强制重连...");
+            reconnectAttempts = 0;
+            iceRestartAttempts = 0;
+            connectWs(true);
           }
         }, HEARTBEAT_TIMEOUT);
       }
@@ -2002,22 +2041,86 @@
 
   // ===== P0: 网络状态监听 =====
   // 监听浏览器 online/offline 事件，实现 WiFi 切换快速恢复
+  let onlineDebounceTimer = null;
+
   window.addEventListener('offline', () => {
     log('网络断开');
     connState.textContent = '网络断开';
   });
 
   window.addEventListener('online', () => {
-    log('网络恢复，立即重连');
-    if (!manualLeave && (!ws || ws.readyState !== WebSocket.OPEN)) {
-      reconnectAttempts = 0;  // 重置重试计数，立即重连
-      // 清理旧的 RTC 连接（IP 已变化，旧连接无效）
-      if (pc) {
-        teardownRtc(true);
-        iceRestartAttempts = 0;
-      }
-      connectWs(true);
+    log('网络恢复，准备重连...');
+    if (manualLeave) return;
+
+    // 防抖：如果有待执行的重连，取消之前的，使用新的
+    if (onlineDebounceTimer) {
+      clearTimeout(onlineDebounceTimer);
+      log('[online] 取消之前的重连计划');
     }
+
+    // 取消任何待执行的 scheduleReconnect
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    // 延迟 1 秒执行重连（等待网络稳定，避免频繁切换）
+    onlineDebounceTimer = setTimeout(() => {
+      onlineDebounceTimer = null;
+      log('网络恢复，开始重连');
+
+      // 如果 WebSocket 已经是打开状态，检查 RTC 连接而不是重建
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        log('[online] WebSocket 已连接，检查 RTC 状态');
+        if (pc) {
+          const iceState = pc.iceConnectionState;
+          if (iceState === 'connected' || iceState === 'completed') {
+            log('[online] RTC 连接正常，无需重建');
+            return;
+          } else if (iceState === 'disconnected' || iceState === 'failed') {
+            log('[online] RTC 连接异常，尝试 ICE 重启');
+            tryIceRestart();
+            return;
+          }
+        }
+        // 没有 PeerConnection，需要重新创建 offer
+        if (!pc && isJoined) {
+          log('[online] 没有 PeerConnection，重新创建 offer');
+          startMediaAndOffer();
+        }
+        return;
+      }
+
+      // 如果 WebSocket 正在连接，不要重复连接
+      if (connecting) {
+        log('[online] WebSocket 正在连接，跳过');
+        return;
+      }
+
+      // 重置重连计数
+      reconnectAttempts = 0;
+      iceRestartAttempts = 0;
+
+      // 清理旧的 RTC 连接（IP 已变化，旧连接无效）
+      teardownRtc(true);
+
+      // 关闭旧的 WebSocket
+      // 先保存引用再置 null，避免 onclose 中再次触发 scheduleReconnect
+      const oldWs = ws;
+      ws = null;
+      if (oldWs) {
+        try {
+          oldWs.close();
+        } catch (e) {
+          // 忽略关闭错误
+        }
+      }
+
+      // 重新连接 WebSocket
+      if (isJoined) {
+        connectWs(true);
+      }
+    }, 1000);  // 1秒防抖
   });
 
   // ===== Network Information API =====
@@ -2093,12 +2196,31 @@
 
       if (!isJoined || manualLeave) return;
 
-      // 如果后台超过30秒，检查并恢复连接
-      if (hiddenDuration > 30000) {
+      // 如果后台超过5秒，检查并恢复连接
+      if (hiddenDuration > 5000) {
+        // 取消待执行的 scheduleReconnect
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+
         // 检查 WebSocket 连接
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           log('[Visibility] WebSocket 已断开，尝试重连');
+
+          // 清理旧的 ws 变量
+          if (ws) {
+            try {
+              ws.close();
+            } catch (e) { }
+            ws = null;
+          }
+
+          // 清理旧的 RTC 连接
+          teardownRtc(true);
+
           reconnectAttempts = 0;
+          iceRestartAttempts = 0;
           connectWs(true);
           return;
         }
