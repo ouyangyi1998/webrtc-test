@@ -79,27 +79,7 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     private void handleJoin(WebSocketSession session, SignalMessage signal) throws IOException {
         String roomId = signal.getRoomId() == null ? "" : signal.getRoomId();
         String sender = signal.getSender() == null ? "" : signal.getSender();
-        // #region agent log
-        try (java.io.FileWriter fw = new java.io.FileWriter(
-                "/Users/ouyangyi/Downloads/开发材料/开发软件/webrtc/.cursor/debug.log", true)) {
-            fw.write(
-                    "{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"H4\",\"location\":\"RoomWebSocketHandler:handleJoin:entry\",\"message\":\"handleJoin entry\",\"data\":{\"roomId\":\""
-                            + roomId + "\",\"sender\":\"" + sender + "\"},\"timestamp\":" + System.currentTimeMillis()
-                            + "}\n");
-        } catch (Exception ignored) {
-        }
-        // #endregion
         if (!StringUtils.hasText(roomId) || !StringUtils.hasText(sender)) {
-            // #region agent log
-            try (java.io.FileWriter fw = new java.io.FileWriter(
-                    "/Users/ouyangyi/Downloads/开发材料/开发软件/webrtc/.cursor/debug.log", true)) {
-                fw.write(
-                        "{\"sessionId\":\"debug-session\",\"runId\":\"run1\",\"hypothesisId\":\"H5\",\"location\":\"RoomWebSocketHandler:handleJoin:validationFailed\",\"message\":\"missing roomId or sender\",\"data\":{\"roomId\":\""
-                                + roomId + "\",\"sender\":\"" + sender + "\"},\"timestamp\":"
-                                + System.currentTimeMillis() + "}\n");
-            } catch (Exception ignored) {
-            }
-            // #endregion
             sendError(session, "roomId 和 sender 必填");
             return;
         }

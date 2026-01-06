@@ -23,6 +23,12 @@
   const fullscreenBtnFloat = document.getElementById("fullscreenBtnFloat");
   const videoContainer = document.getElementById("videoContainer");
 
+  // 重连 Overlay 元素
+  const reconnectOverlay = document.getElementById("reconnectOverlay");
+  const reconnectStatus = document.getElementById("reconnectStatus");
+  const reconnectProgress = document.getElementById("reconnectProgress");
+  const reconnectTimer = document.getElementById("reconnectTimer");
+
   let ws;
   let pc;
   let dataChannel;
@@ -59,6 +65,10 @@
   let frameMonitorTimer = null;
   let lastFrameCount = 0;
   let frameStuckCount = 0;
+
+  // 鼠标事件节流（减少 DataChannel 消息量）
+  let lastMouseSendTime = 0;
+  const MOUSE_THROTTLE_MS = 33;  // 限制鼠标移动最多 30fps
 
   // 启动帧监控
   const startFrameMonitor = () => {
@@ -1117,6 +1127,7 @@
     ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
     ws.onopen = () => {
       reconnectAttempts = 0;
+      hideReconnectOverlay();  // 隐藏重连进度条
       connecting = false;
       log("WebSocket 已连接");
 
@@ -1275,6 +1286,16 @@
   const sendMouse = (action, xRatio, yRatio, extra = {}) => {
     if (!isController()) return;
     if (!enableMouseChk.checked) return;
+
+    // 鼠标移动事件节流：限制最多 30fps，减少 DataChannel 消息量
+    if (action === 'move') {
+      const now = Date.now();
+      if (now - lastMouseSendTime < MOUSE_THROTTLE_MS) {
+        return;  // 跳过此次发送
+      }
+      lastMouseSendTime = now;
+    }
+
     if (!dataChannel || dataChannel.readyState !== "open") {
       // 如果 DataChannel 不可用，降级使用 WebSocket
       log("DataChannel 未就绪，使用 WebSocket 发送控制指令");
@@ -1753,10 +1774,53 @@
     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
     reconnectAttempts += 1;
     log(`信令断开，${delay}ms 后尝试重连...`);
+
+    // 显示重连 Overlay
+    showReconnectOverlay(delay);
+
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connectWs(true);
     }, delay);
+  };
+
+  // 显示重连进度 Overlay
+  const showReconnectOverlay = (delayMs) => {
+    if (!reconnectOverlay) return;
+    reconnectOverlay.classList.remove('hidden');
+
+    let remaining = delayMs;
+    const startTime = Date.now();
+
+    const updateProgress = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(100, (elapsed / delayMs) * 100);
+      remaining = Math.max(0, delayMs - elapsed);
+
+      if (reconnectProgress) {
+        reconnectProgress.style.width = `${progress}%`;
+      }
+      if (document.getElementById('reconnectTimer')) {
+        document.getElementById('reconnectTimer').textContent = `${Math.ceil(remaining / 1000)}s 后尝试重连`;
+      }
+      if (reconnectStatus) {
+        reconnectStatus.textContent = `正在重新连接... (第 ${reconnectAttempts} 次)`;
+      }
+
+      if (elapsed < delayMs) {
+        requestAnimationFrame(updateProgress);
+      }
+    };
+    requestAnimationFrame(updateProgress);
+  };
+
+  // 隐藏重连 Overlay
+  const hideReconnectOverlay = () => {
+    if (!reconnectOverlay) return;
+    reconnectOverlay.classList.add('hidden');
+    if (reconnectProgress) {
+      reconnectProgress.style.width = '0%';
+    }
   };
 
   const cleanup = (manual = false) => {

@@ -477,7 +477,7 @@ class WebRTCManager(
             Log.e(TAG, "Failed to change capture format: ${e.message}")
         }
         
-        // 2. 调整编码器码率 + SVC层级 + FEC冗余
+        // 2. 调整编码器码率 + SVC层级 + 分辨率缩放
         peerConnection?.senders?.find { it.track()?.kind() == "video" }?.let { sender ->
             val parameters = sender.parameters
             if (parameters.encodings.isNotEmpty()) {
@@ -498,6 +498,21 @@ class WebRTCManager(
                     Log.i(TAG, "Set SVC scalability mode: $svcMode")
                 } catch (e: Exception) {
                     Log.d(TAG, "SVC mode not supported: ${e.message}")
+                }
+                
+                // 编码分辨率缩放 - 保持捕获分辨率不变，只缩小编码输出
+                // 优点：鼠标坐标计算不受影响，视频容器尺寸不变，只是清晰度变化
+                val scaleDown = when {
+                    bitrateBps < 300000 -> 3.0    // 极低码率：1/3 分辨率 (~360p)
+                    bitrateBps < 700000 -> 2.0    // 低码率：1/2 分辨率 (~540p)
+                    bitrateBps < 1500000 -> 1.5   // 中码率：2/3 分辨率 (~720p)
+                    else -> 1.0                    // 高码率：原分辨率 (1080p)
+                }
+                try {
+                    encoding.scaleResolutionDownBy = scaleDown
+                    Log.i(TAG, "Set resolution scale down: ${scaleDown}x (effective ~${(1080/scaleDown).toInt()}p)")
+                } catch (e: Exception) {
+                    Log.d(TAG, "scaleResolutionDownBy not supported: ${e.message}")
                 }
                 
                 sender.parameters = parameters
