@@ -16,8 +16,31 @@ public class RoomRegistry {
     public synchronized boolean addToRoom(String roomId, WebSocketSession session) {
         Set<WebSocketSession> sessions = rooms.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet());
 
+        // 调试日志：当前房间状态
+        System.out.println("[RoomRegistry] 房间 " + roomId + " 当前 session 数量: " + sessions.size());
+        for (WebSocketSession s : sessions) {
+            System.out.println("[RoomRegistry]   - session " + s.getId() + ", sender=" + s.getAttributes().get("sender")
+                    + ", isOpen=" + s.isOpen());
+        }
+
+        // 清理无效的 session（已关闭的连接）
+        int beforeSize = sessions.size();
+        sessions.removeIf(s -> !s.isOpen());
+        int afterSize = sessions.size();
+        if (beforeSize != afterSize) {
+            System.out.println("[RoomRegistry] 清理了 " + (beforeSize - afterSize) + " 个已关闭的 session");
+        }
+
         // 检查是否有同名用户（如果有，踢掉旧的）
         String newSender = (String) session.getAttributes().get("sender");
+        System.out.println("[RoomRegistry] 新用户尝试加入: sender=" + newSender + ", sessionId=" + session.getId());
+
+        // 检查当前 session 是否已经在房间中（防止重复 join）
+        if (sessions.contains(session)) {
+            System.out.println("[RoomRegistry] 该 session 已在房间中，跳过重复加入");
+            return true;
+        }
+
         if (newSender != null) {
             WebSocketSession duplicate = null;
             for (WebSocketSession existing : sessions) {
@@ -28,21 +51,26 @@ public class RoomRegistry {
                 }
             }
             if (duplicate != null) {
+                System.out.println("[RoomRegistry] 发现同名用户，踢掉旧 session: " + duplicate.getId());
+                // 先从 sessions 中移除，再尝试关闭
+                sessions.remove(duplicate);
                 try {
                     // 关闭旧连接（状态码 4001: Duplicate Login）
                     duplicate.close(new org.springframework.web.socket.CloseStatus(4001, "Duplicate Login"));
-                    sessions.remove(duplicate);
                 } catch (Exception e) {
+                    // 忽略关闭错误，session 已经从集合中移除
                     e.printStackTrace();
                 }
             }
         }
 
         if (sessions.size() >= 2) {
+            System.out.println("[RoomRegistry] 房间已满，拒绝加入");
             return false;
         }
         sessions.add(session);
         session.getAttributes().put("roomId", roomId);
+        System.out.println("[RoomRegistry] 成功加入房间，当前人数: " + sessions.size());
         return true;
     }
 

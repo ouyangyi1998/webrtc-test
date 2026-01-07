@@ -27,7 +27,7 @@
   const reconnectOverlay = document.getElementById("reconnectOverlay");
   const reconnectStatus = document.getElementById("reconnectStatus");
   const reconnectProgress = document.getElementById("reconnectProgress");
-  const reconnectTimer = document.getElementById("reconnectTimer");
+  const reconnectTimerEl = document.getElementById("reconnectTimer");
 
   let ws;
   let pc;
@@ -45,6 +45,12 @@
   let iceDisconnectTimer = null;  // ICE disconnected 状态恢复超时
   let iceRestartAttempts = 0;     // ICE 重启尝试次数
   const MAX_ICE_RESTART_ATTEMPTS = 3;  // 最大重启次数
+
+  // Offer 超时重试相关
+  let offerTimeoutTimer = null;   // offer 超时定时器
+  let offerRetryCount = 0;        // offer 重试次数
+  const OFFER_TIMEOUT = 10000;    // 10 秒未收到 answer 则重试
+  const MAX_OFFER_RETRIES = 3;    // 最大重试次数
 
   // WebSocket 心跳相关
   let heartbeatTimer = null;
@@ -886,7 +892,8 @@
 
       // 连接成功
       if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
-        // 重置重启计数
+        // 重置重连计数（连接真正稳定了）
+        reconnectAttempts = 0;
         iceRestartAttempts = 0;
         logSelectedCandidate();
 
@@ -1063,6 +1070,16 @@
       log(`[connectWs] 跳过: connecting=${connecting}, wsOpen=${ws?.readyState === WebSocket.OPEN}`);
       return;
     }
+
+    // 如果页面在后台，跳过连接尝试，等待页面恢复前台
+    if (document.hidden) {
+      log('[connectWs] 页面在后台，跳过连接尝试');
+      return;
+    }
+
+    // 重置手动离开标志，允许自动重连
+    manualLeave = false;
+
     const reconnect = isReconnect === true;
     // #region agent log
     fetch("http://127.0.0.1:7242/ingest/5c2f5526-6f2e-4269-878e-b14149145b61", {
@@ -1126,7 +1143,8 @@
     connecting = true;
     ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
     ws.onopen = () => {
-      reconnectAttempts = 0;
+      // 注意：不在这里重置 reconnectAttempts，等到 RTC 连接成功后再重置
+      // 这样如果 WebSocket 连接后立即断开，重连间隔会逐步增加，避免死循环
       hideReconnectOverlay();  // 隐藏重连进度条
       connecting = false;
       log("WebSocket 已连接");
@@ -1162,6 +1180,11 @@
             }
             break;
           case "peer-joined":
+            // 如果已经有正在进行的 offer，忽略新的 peer-joined，避免竞争
+            if (pc && pc.signalingState === 'have-local-offer') {
+              log("已有 offer 在等待 answer，忽略 peer-joined");
+              break;
+            }
             log("有新成员加入，开始创建 offer");
             isInitiator = true;
             await startMediaAndOffer();
@@ -1177,6 +1200,8 @@
             break;
           case "answer":
             log("收到 answer");
+            // 取消 offer 超时定时器
+            cancelOfferTimeout();
             // 检查 PeerConnection 状态，只有在 have-local-offer 状态才能设置 answer
             if (!pc) {
               log("忽略 answer: PeerConnection 不存在");
@@ -1222,15 +1247,28 @@
     };
     ws.onclose = () => {
       log("WebSocket 已关闭");
+      ws = null;  // 清理引用，允许重连
       connecting = false;
       connState.textContent = "信令已断开";
 
       // 停止心跳
       stopHeartbeat();
 
-      teardownRtc(true);
+      // 不立即清理 RTC，给 WebSocket 重连的机会
+      // 如果使用 TURN relay，RTC 连接可能仍然有效
       if (!manualLeave && isJoined) {
+        // 延迟 3 秒再检查是否需要清理 RTC
+        setTimeout(() => {
+          // 如果 3 秒内 WebSocket 没有重连成功，才清理 RTC
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            log("WebSocket 重连超时，清理 RTC 连接");
+            teardownRtc(true);
+          }
+        }, 3000);
         scheduleReconnect();
+      } else {
+        // 手动离开或未加入，立即清理
+        teardownRtc(true);
       }
     };
     ws.onerror = () => {
@@ -1252,9 +1290,9 @@
     }
 
     // 添加视频接收器，告诉对方我们想接收视频
-    // 检查是否已经有视频 transceiver
+    // 检查是否已经有视频 transceiver（使用可选链避免 track 为 null 的情况）
     const transceivers = pc.getTransceivers();
-    const hasVideoTransceiver = transceivers.some(t => t.receiver.track.kind === 'video');
+    const hasVideoTransceiver = transceivers.some(t => t.receiver?.track?.kind === 'video');
     if (!hasVideoTransceiver) {
       log("添加视频接收器 (recvonly)");
       pc.addTransceiver('video', { direction: 'recvonly' });
@@ -1263,6 +1301,82 @@
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     sendSignal("offer", { sdp: offer });
+
+    // 启动 offer 超时定时器
+    startOfferTimeout();
+  };
+
+  // 启动 offer 超时检测
+  const startOfferTimeout = () => {
+    // 清理之前的定时器
+    if (offerTimeoutTimer) {
+      clearTimeout(offerTimeoutTimer);
+    }
+
+    offerTimeoutTimer = setTimeout(() => {
+      offerTimeoutTimer = null;
+
+      // 检查是否还需要重试
+      if (!pc) {
+        log('[Offer] PeerConnection 不存在，跳过重试');
+        return;
+      }
+
+      // 检查当前信令状态
+      const signalingState = pc.signalingState;
+      const iceState = pc.iceConnectionState;
+
+      // 如果已经建立连接，不需要重试
+      if (iceState === 'connected' || iceState === 'completed') {
+        log('[Offer] 连接已建立，无需重试');
+        offerRetryCount = 0;
+        return;
+      }
+
+      // 如果信令状态不是 have-local-offer，说明已经收到 answer
+      if (signalingState !== 'have-local-offer') {
+        log(`[Offer] 信令状态 ${signalingState}，无需重试`);
+        return;
+      }
+
+      // 超时重试
+      offerRetryCount++;
+      if (offerRetryCount <= MAX_OFFER_RETRIES) {
+        log(`[Offer] 超时未收到 answer，重新创建 offer（第 ${offerRetryCount} 次）`);
+        retryOffer();
+      } else {
+        log('[Offer] 重试次数已用尽，触发完整重连');
+        offerRetryCount = 0;
+        teardownRtc(true);
+        scheduleReconnect();
+      }
+    }, OFFER_TIMEOUT);
+  };
+
+  // 重试创建 offer
+  const retryOffer = async () => {
+    if (!pc) return;
+
+    try {
+      // 重新创建 offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal("offer", { sdp: offer });
+
+      // 再次启动超时定时器
+      startOfferTimeout();
+    } catch (e) {
+      log(`[Offer] 重试失败: ${e.message}`);
+    }
+  };
+
+  // 取消 offer 超时定时器（收到 answer 时调用）
+  const cancelOfferTimeout = () => {
+    if (offerTimeoutTimer) {
+      clearTimeout(offerTimeoutTimer);
+      offerTimeoutTimer = null;
+    }
+    offerRetryCount = 0;
   };
 
   const handleOffer = async (sdp) => {
@@ -1694,6 +1808,9 @@
     }
     iceRestartAttempts = 0;
 
+    // 清理 offer 超时定时器
+    cancelOfferTimeout();
+
     // 清理网络统计监控器
     if (statsMonitor) {
       statsMonitor.stop();
@@ -1746,12 +1863,14 @@
           // 清理 RTC 连接
           teardownRtc(true);
 
-          // 立即尝试重连
+          // 立即尝试重连（但不重置 reconnectAttempts，让指数退避生效）
           if (isJoined && !manualLeave) {
             log("心跳超时，强制重连...");
-            reconnectAttempts = 0;
+            // 注意：不重置 reconnectAttempts，避免心跳持续超时时无限快速重连
             iceRestartAttempts = 0;
-            connectWs(true);
+            scheduleReconnect();  // 使用 scheduleReconnect 而不是直接 connectWs
+          } else {
+            log(`心跳超时，不重连 (isJoined=${isJoined}, manualLeave=${manualLeave})`);
           }
         }, HEARTBEAT_TIMEOUT);
       }
@@ -1771,9 +1890,25 @@
 
   const scheduleReconnect = () => {
     if (reconnectTimer) return;
+
+    // 如果页面在后台，不启动重连定时器，等待页面恢复前台时再处理
+    if (document.hidden) {
+      log('[scheduleReconnect] 页面在后台，跳过重连');
+      return;
+    }
+
+    // 最大重连次数限制
+    const MAX_RECONNECT_ATTEMPTS = 20;
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      log(`重连次数已达上限 (${MAX_RECONNECT_ATTEMPTS})，请手动刷新页面`);
+      connState.textContent = "连接失败，请刷新页面";
+      hideReconnectOverlay();
+      return;
+    }
+
     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
     reconnectAttempts += 1;
-    log(`信令断开，${delay}ms 后尝试重连...`);
+    log(`信令断开，${delay}ms 后尝试重连... (第 ${reconnectAttempts} 次)`);
 
     // 显示重连 Overlay
     showReconnectOverlay(delay);

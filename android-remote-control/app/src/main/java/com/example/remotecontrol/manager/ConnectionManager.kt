@@ -170,16 +170,44 @@ object ConnectionManager {
             
             // 清除 ICE 超时定时器
             iceDisconnectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-            
-            // 关闭旧的 PeerConnection（IP 已变化，旧连接无效）
-            webRTCManager?.closePeerConnection()
             iceRestartAttempts = 0
             
             val config = configManager ?: return
-            val context = lastContext ?: return
-            val intent = lastScreenCaptureIntent ?: return
             
-            // 如果 WebSocket 已断开，立即重连
+            // 先检查当前 ICE 状态，只有确认断开时才关闭 PeerConnection
+            val iceState = webRTCManager?.getIceConnectionState()
+            val needReconnect = when (iceState) {
+                PeerConnection.IceConnectionState.CONNECTED,
+                PeerConnection.IceConnectionState.COMPLETED -> {
+                    // TURN relay 可能仍然有效，不需要重建
+                    LogManager.i("网络变化但 ICE 仍然连接 ($iceState)，保持现有连接")
+                    false
+                }
+                PeerConnection.IceConnectionState.DISCONNECTED,
+                PeerConnection.IceConnectionState.FAILED -> {
+                    // 确认断开，需要重建
+                    LogManager.i("ICE 状态为 $iceState，需要重建连接")
+                    webRTCManager?.closePeerConnection()
+                    true
+                }
+                else -> {
+                    // 其他状态（NEW, CHECKING 等），尝试重连
+                    LogManager.i("ICE 状态为 $iceState，尝试重连")
+                    true
+                }
+            }
+            
+            if (!needReconnect) {
+                // 连接仍然有效，只需要确保 WebSocket 正常
+                if (signalingClient?.isConnected() != true) {
+                    signalingClient?.disconnect()
+                    signalingClient = SignalingClient(config.signalUrl, signalingListener)
+                    signalingClient?.connect()
+                }
+                return
+            }
+            
+            // 确认需要重连
             if (signalingClient?.isConnected() != true) {
                 LogManager.i("WebSocket 未连接，立即重连信令服务器")
                 signalingClient?.disconnect()
@@ -282,8 +310,9 @@ object ConnectionManager {
         override fun onConnected() {
             LogManager.i("WebSocket 已连接")
             
-            // P1: WS 重连后清理旧的 PeerConnection，避免状态混乱
-            webRTCManager?.closePeerConnection()
+            // 注意：不在这里关闭 PeerConnection！
+            // 因为 TURN relay 连接可能仍然有效，不应该无条件关闭
+            // 如果需要重建连接，会在收到新的 offer 时处理
             iceRestartAttempts = 0
             
             updateStatus(wsStatus = "已连接", overallStatus = "等待加入房间...")
@@ -346,10 +375,10 @@ object ConnectionManager {
                     LogManager.i("对端重连，取消待执行的连接清理")
                 }
                 
-                // 对端重新加入（可能是网络切换或刷新），清理旧连接
-                // 这样当收到新的 offer 时会创建新的 PeerConnection
-                webRTCManager?.closePeerConnection()
-                updateStatus(dcStatus = "未连接", iceStatus = "对端重连", overallStatus = "等待信令协商...")
+                // 注意：不在这里关闭 PeerConnection！
+                // 只有在收到新的 offer 时才需要清理（在 offer 处理中会判断）
+                // 否则会导致当前正在使用的连接被中断
+                updateStatus(overallStatus = "对端已加入，等待信令...")
             }
             
             "peer-left" -> {
@@ -384,6 +413,14 @@ object ConnectionManager {
                     val iceServers = config.getIceServers().map {
                         WebRTCManager.IceServerConfig(it.url, it.username, it.password)
                     }
+                    
+                    // 如果已有 PeerConnection，先关闭旧的再创建新的
+                    // 这是为了处理对端刷新页面重新发送 offer 的情况
+                    if (webRTCManager?.getIceConnectionState() != null) {
+                        LogManager.i("检测到旧的 PeerConnection，先关闭")
+                        webRTCManager?.closePeerConnection()
+                    }
+                    
                     webRTCManager?.createPeerConnection(iceServers)
                     webRTCManager?.handleOffer(sdp.first, sdp.second)
                 }

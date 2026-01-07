@@ -47,9 +47,14 @@ class NetworkMonitor(private val context: Context) {
                 LogManager.d("[$TAG] 取消待发送的网络丢失通知（网络快速恢复）")
             }
             
-            // 只有在网络ID变化时才触发重连（避免首次注册时误触发）
-            if (lastNetworkId != null && lastNetworkId != networkId) {
-                LogManager.i("[$TAG] 检测到网络切换: $lastNetworkId -> $networkId")
+            // 网络恢复时始终触发重连（无论是否是同一网络）
+            // 因为 WebSocket 可能已经断开，需要确保连接状态
+            if (lastNetworkId != null) {
+                if (lastNetworkId != networkId) {
+                    LogManager.i("[$TAG] 检测到网络切换: $lastNetworkId -> $networkId")
+                } else {
+                    LogManager.i("[$TAG] 网络恢复（同一网络）: $networkId")
+                }
                 listener?.onNetworkAvailable()
             }
             lastNetworkId = networkId

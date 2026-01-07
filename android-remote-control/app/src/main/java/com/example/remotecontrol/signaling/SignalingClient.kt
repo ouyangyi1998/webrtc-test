@@ -16,8 +16,10 @@ class SignalingClient(
     companion object {
         private const val TAG = "SignalingClient"
         private const val HEARTBEAT_INTERVAL = 30000L  // 30秒
+        private const val HEARTBEAT_TIMEOUT = 15000L   // 15秒超时
         private const val RECONNECT_BASE_DELAY = 1000L
         private const val RECONNECT_MAX_DELAY = 10000L
+        private const val MAX_RECONNECT_ATTEMPTS = 20
     }
 
     interface Listener {
@@ -33,7 +35,10 @@ class SignalingClient(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private var isConnecting = false
+    private var isOpen = false  // 实际连接状态
     private var shouldReconnect = true
+    private var pongReceived = true  // 心跳响应标志
+    private var reconnectAttempts = 0
 
     private val client = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
@@ -64,14 +69,23 @@ class SignalingClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected to $serverUrl")
                 isConnecting = false
+                isOpen = true
                 startHeartbeat()
                 listener.onConnected()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 Log.d(TAG, "Received: $text")
+                
+                // 检测 pong 响应
+                if (text.contains("\"type\":\"pong\"")) {
+                    pongReceived = true
+                    return
+                }
+                
                 val message = SignalMessage.fromJson(text)
                 if (message != null) {
+                    reconnectAttempts = 0  // 收到有效消息，重置重连计数
                     listener.onMessage(message)
                 } else {
                     Log.w(TAG, "Failed to parse message: $text")
@@ -101,6 +115,7 @@ class SignalingClient(
      */
     fun disconnect() {
         shouldReconnect = false
+        isOpen = false
         stopHeartbeat()
         reconnectJob?.cancel()
         webSocket?.close(1000, "Normal closure")
@@ -164,10 +179,30 @@ class SignalingClient(
 
     private fun startHeartbeat() {
         stopHeartbeat()
+        pongReceived = true
         heartbeatJob = scope.launch {
-            while (isActive) {
+            while (isActive && isOpen) {
                 delay(HEARTBEAT_INTERVAL)
+                
+                // 检查上一次心跳是否收到响应
+                if (!pongReceived) {
+                    Log.w(TAG, "心跳超时，连接可能已断开")
+                    // 触发断开处理
+                    webSocket?.close(1000, "Heartbeat timeout")
+                    break
+                }
+                
+                // 发送新的心跳
+                pongReceived = false
                 send(SignalMessage.ping())
+                
+                // 设置超时检测
+                delay(HEARTBEAT_TIMEOUT)
+                if (!pongReceived && isOpen) {
+                    Log.w(TAG, "心跳响应超时 (${HEARTBEAT_TIMEOUT}ms)，强制断开")
+                    webSocket?.close(1000, "Pong timeout")
+                    break
+                }
             }
         }
     }
@@ -179,6 +214,7 @@ class SignalingClient(
 
     private fun handleDisconnect() {
         stopHeartbeat()
+        isOpen = false
         webSocket = null
         listener.onDisconnected()
 
@@ -189,20 +225,27 @@ class SignalingClient(
 
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
+        
+        // 检查重连次数
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            Log.w(TAG, "重连次数已达上限 ($MAX_RECONNECT_ATTEMPTS)，停止自动重连")
+            listener.onError("连接失败，已达最大重连次数")
+            return
+        }
+        
         reconnectJob = scope.launch {
-            var delay = RECONNECT_BASE_DELAY
-            while (isActive && shouldReconnect && webSocket == null) {
-                Log.d(TAG, "Reconnecting in ${delay}ms...")
-                delay(delay)
-                if (shouldReconnect) {
-                    connect()
-                }
-                delay = minOf(delay * 2, RECONNECT_MAX_DELAY)
+            val delay = minOf(RECONNECT_BASE_DELAY * (1L shl reconnectAttempts), RECONNECT_MAX_DELAY)
+            reconnectAttempts++
+            Log.d(TAG, "Reconnecting in ${delay}ms... (attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)")
+            delay(delay)
+            if (shouldReconnect && webSocket == null) {
+                isConnecting = false  // 允许重新连接
+                connect()
             }
         }
     }
 
-    fun isConnected(): Boolean = webSocket != null
+    fun isConnected(): Boolean = webSocket != null && isOpen
 
     fun cleanup() {
         shouldReconnect = false
