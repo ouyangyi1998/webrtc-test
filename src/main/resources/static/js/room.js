@@ -38,6 +38,7 @@
   let isInitiator = false;
   let reconnectAttempts = 0;
   let reconnectTimer;
+  let rtcCleanupTimer;  // ws.onclose 中的延迟 RTC 清理定时器
   let connecting = false;
   let manualLeave = false;
 
@@ -1149,11 +1150,24 @@
       connecting = false;
       log("WebSocket 已连接");
 
-      // P1: 重连时清理旧的 PeerConnection，避免状态混乱
+      // 取消之前设置的 RTC 清理定时器（重连成功了，不需要清理）
+      if (rtcCleanupTimer) {
+        clearTimeout(rtcCleanupTimer);
+        rtcCleanupTimer = null;
+        log("取消待执行的 RTC 清理定时器");
+      }
+
+      // P1: 重连时检查 RTC 状态，只有确实断开时才清理
       if (reconnect && pc) {
-        log("信令重连，清理旧的 RTC 连接");
-        teardownRtc(true);
-        iceRestartAttempts = 0;
+        const iceState = pc.iceConnectionState;
+        // 如果 ICE 连接仍然有效（如 TURN relay），不需要重建
+        if (iceState === 'connected' || iceState === 'completed') {
+          log("信令重连，但 RTC 连接仍然有效 (" + iceState + ")，保持现有连接");
+        } else {
+          log("信令重连，RTC 连接已断开 (" + iceState + ")，清理旧连接");
+          teardownRtc(true);
+          iceRestartAttempts = 0;
+        }
       }
 
       ws.send(JSON.stringify({ type: "join", roomId, sender }));
@@ -1257,8 +1271,13 @@
       // 不立即清理 RTC，给 WebSocket 重连的机会
       // 如果使用 TURN relay，RTC 连接可能仍然有效
       if (!manualLeave && isJoined) {
+        // 取消之前的定时器
+        if (rtcCleanupTimer) {
+          clearTimeout(rtcCleanupTimer);
+        }
         // 延迟 3 秒再检查是否需要清理 RTC
-        setTimeout(() => {
+        rtcCleanupTimer = setTimeout(() => {
+          rtcCleanupTimer = null;
           // 如果 3 秒内 WebSocket 没有重连成功，才清理 RTC
           if (!ws || ws.readyState !== WebSocket.OPEN) {
             log("WebSocket 重连超时，清理 RTC 连接");
