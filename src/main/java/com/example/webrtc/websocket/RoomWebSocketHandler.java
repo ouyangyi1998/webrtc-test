@@ -31,6 +31,11 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     // 延迟发送 peer-left 的时间（毫秒），给客户端重连的缓冲期
     private static final long PEER_LEFT_DELAY_MS = 3000;
 
+    // 心跳超时时间（60 秒没有活动则认为断开）
+    private static final long SESSION_TIMEOUT_MS = 60000;
+    // 超时检查间隔（每 20 秒检查一次）
+    private static final long TIMEOUT_CHECK_INTERVAL_MS = 20000;
+
     private final RoomRegistry roomRegistry;
     private final ObjectMapper objectMapper;
 
@@ -40,9 +45,48 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     // 待发送的 peer-left 任务（key: roomId + ":" + sender）
     private final Map<String, ScheduledFuture<?>> pendingPeerLeftTasks = new ConcurrentHashMap<>();
 
+    // 每个 session 的最后活跃时间
+    private final Map<String, Long> sessionLastActive = new ConcurrentHashMap<>();
+
     public RoomWebSocketHandler(RoomRegistry roomRegistry, ObjectMapper objectMapper) {
         this.roomRegistry = roomRegistry;
         this.objectMapper = objectMapper;
+
+        // 启动定期检查超时 session 的任务
+        scheduler.scheduleAtFixedRate(this::checkTimeoutSessions,
+                TIMEOUT_CHECK_INTERVAL_MS, TIMEOUT_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        log.info("Session 超时检查任务已启动，超时时间: {}秒，检查间隔: {}秒",
+                SESSION_TIMEOUT_MS / 1000, TIMEOUT_CHECK_INTERVAL_MS / 1000);
+    }
+
+    /**
+     * 检查并关闭超时的 session
+     */
+    private void checkTimeoutSessions() {
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, Long> entry : sessionLastActive.entrySet()) {
+            String sessionId = entry.getKey();
+            long lastActive = entry.getValue();
+
+            if (now - lastActive > SESSION_TIMEOUT_MS) {
+                log.warn("Session {} 超时（上次活跃: {}秒前），主动关闭",
+                        sessionId, (now - lastActive) / 1000);
+
+                // 找到并关闭该 session
+                roomRegistry.getAllSessions().stream()
+                        .filter(s -> s.getId().equals(sessionId))
+                        .findFirst()
+                        .ifPresent(session -> {
+                            try {
+                                session.close(new CloseStatus(4002, "Session timeout"));
+                            } catch (Exception e) {
+                                log.warn("关闭超时 session 失败: {}", e.getMessage());
+                            }
+                        });
+
+                sessionLastActive.remove(sessionId);
+            }
+        }
     }
 
     @Override
@@ -63,6 +107,8 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         }
         // 心跳响应
         if ("ping".equalsIgnoreCase(signal.getType())) {
+            // 记录 session 活跃时间
+            sessionLastActive.put(session.getId(), System.currentTimeMillis());
             session.sendMessage(new TextMessage("{\"type\":\"pong\"}"));
             return;
         }
@@ -92,6 +138,9 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         log.info("session {} 加入房间 {}", session.getId(), roomId);
+
+        // 记录活跃时间
+        sessionLastActive.put(session.getId(), System.currentTimeMillis());
 
         // 取消该用户之前可能待发送的 peer-left（用户快速重连的情况）
         String taskKey = roomId + ":" + sender;
@@ -166,6 +215,7 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
 
         // 先从房间移除该 session
         roomRegistry.remove(session);
+        sessionLastActive.remove(session.getId());
 
         if (StringUtils.hasText(roomId) && !Boolean.TRUE.equals(session.getAttributes().get("leftNotified"))) {
             // 延迟发送 peer-left，给客户端重连的缓冲期

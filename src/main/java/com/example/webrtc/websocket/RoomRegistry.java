@@ -98,4 +98,13 @@ public class RoomRegistry {
                 .filter(s -> exclude == null || !s.getId().equals(exclude.getId()))
                 .collect(Collectors.toSet());
     }
+
+    /**
+     * 获取所有房间的所有 session（用于超时检测）
+     */
+    public Set<WebSocketSession> getAllSessions() {
+        return rooms.values().stream()
+                .flatMap(Set::stream)
+                .collect(Collectors.toSet());
+    }
 }
