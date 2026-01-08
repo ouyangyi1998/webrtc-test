@@ -100,7 +100,15 @@ class ConfigFragment : Fragment(), ConnectionManager.ConnectionStateListener {
         }
         
         binding.btnDisconnect.setOnClickListener {
+            // 先断开连接
             ConnectionManager.disconnect()
+            
+            // 停止前台服务
+            val stopIntent = android.content.Intent(requireContext(),
+                com.example.remotecontrol.service.ScreenCaptureService::class.java).apply {
+                action = com.example.remotecontrol.service.ScreenCaptureService.ACTION_STOP
+            }
+            requireContext().startService(stopIntent)
         }
     }
     

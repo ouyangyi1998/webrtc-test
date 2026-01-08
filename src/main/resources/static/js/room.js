@@ -51,6 +51,7 @@
   // Offer 超时重试相关
   let offerTimeoutTimer = null;   // offer 超时定时器
   let offerRetryCount = 0;        // offer 重试次数
+  let offerInProgress = false;    // offer 创建锁，防止并发创建多个 offer
   const OFFER_TIMEOUT = 10000;    // 10 秒未收到 answer 则重试
   const MAX_OFFER_RETRIES = 3;    // 最大重试次数
 
@@ -1211,6 +1212,10 @@
             break;
           case "peer-joined":
             // 如果已经有正在进行的 offer，忽略新的 peer-joined，避免竞争
+            if (offerInProgress) {
+              log("已有 offer 正在创建中，忽略 peer-joined");
+              break;
+            }
             if (pc && pc.signalingState === 'have-local-offer') {
               log("已有 offer 在等待 answer，忽略 peer-joined");
               break;
@@ -1324,27 +1329,39 @@
   };
 
   const startMediaAndOffer = async () => {
-    ensurePeer();
-    if (!dataChannel) {
-      dataChannel = pc.createDataChannel("data");
-      attachDataChannel();
+    // 防止并发创建多个 offer
+    if (offerInProgress) {
+      log("已有 offer 正在创建中，跳过");
+      return;
     }
+    offerInProgress = true;
 
-    // 添加视频接收器，告诉对方我们想接收视频
-    // 检查是否已经有视频 transceiver（使用可选链避免 track 为 null 的情况）
-    const transceivers = pc.getTransceivers();
-    const hasVideoTransceiver = transceivers.some(t => t.receiver?.track?.kind === 'video');
-    if (!hasVideoTransceiver) {
-      log("添加视频接收器 (recvonly)");
-      pc.addTransceiver('video', { direction: 'recvonly' });
+    try {
+      ensurePeer();
+      if (!dataChannel) {
+        dataChannel = pc.createDataChannel("data");
+        attachDataChannel();
+      }
+
+      // 添加视频接收器，告诉对方我们想接收视频
+      // 检查是否已经有视频 transceiver（使用可选链避免 track 为 null 的情况）
+      const transceivers = pc.getTransceivers();
+      const hasVideoTransceiver = transceivers.some(t => t.receiver?.track?.kind === 'video');
+      if (!hasVideoTransceiver) {
+        log("添加视频接收器 (recvonly)");
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      }
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal("offer", { sdp: offer });
+
+      // 启动 offer 超时定时器
+      startOfferTimeout();
+    } catch (e) {
+      log(`创建 offer 失败: ${e.message}`);
+      offerInProgress = false;
     }
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    sendSignal("offer", { sdp: offer });
-
-    // 启动 offer 超时定时器
-    startOfferTimeout();
   };
 
   // 启动 offer 超时检测
@@ -1371,12 +1388,14 @@
       if (iceState === 'connected' || iceState === 'completed') {
         log('[Offer] 连接已建立，无需重试');
         offerRetryCount = 0;
+        offerInProgress = false;  // 释放锁
         return;
       }
 
       // 如果信令状态不是 have-local-offer，说明已经收到 answer
       if (signalingState !== 'have-local-offer') {
         log(`[Offer] 信令状态 ${signalingState}，无需重试`);
+        offerInProgress = false;  // 释放锁
         return;
       }
 
@@ -1388,6 +1407,7 @@
       } else {
         log('[Offer] 重试次数已用尽，触发完整重连');
         offerRetryCount = 0;
+        offerInProgress = false;  // 释放锁
         teardownRtc(true);
         scheduleReconnect();
       }
@@ -1408,6 +1428,7 @@
       startOfferTimeout();
     } catch (e) {
       log(`[Offer] 重试失败: ${e.message}`);
+      offerInProgress = false;  // 释放锁
     }
   };
 
@@ -1418,6 +1439,7 @@
       offerTimeoutTimer = null;
     }
     offerRetryCount = 0;
+    offerInProgress = false;  // 重置 offer 创建锁
   };
 
   const handleOffer = async (sdp) => {
