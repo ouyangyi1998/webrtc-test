@@ -39,6 +39,7 @@
   let reconnectAttempts = 0;
   let reconnectTimer;
   let rtcCleanupTimer;  // ws.onclose 中的延迟 RTC 清理定时器
+  let wsConnectionTimeout;  // WebSocket 连接超时定时器
   let connecting = false;
   let manualLeave = false;
 
@@ -1143,7 +1144,22 @@
     }
     connecting = true;
     ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+
+    // 设置连接超时（10秒）
+    // 防止网络不可达时 WebSocket 请求无限挂起
+    wsConnectionTimeout = setTimeout(() => {
+      if (ws && ws.readyState !== WebSocket.OPEN) {
+        log("WebSocket 连接超时 (10s)，强制关闭");
+        connecting = false;  // 重置状态
+        ws.close();          // 这会触发 onclose -> scheduleReconnect
+      }
+    }, 10000);
+
     ws.onopen = () => {
+      if (wsConnectionTimeout) {
+        clearTimeout(wsConnectionTimeout); // 连接成功，取消超时检测
+        wsConnectionTimeout = null;
+      }
       // 注意：不在这里重置 reconnectAttempts，等到 RTC 连接成功后再重置
       // 这样如果 WebSocket 连接后立即断开，重连间隔会逐步增加，避免死循环
       hideReconnectOverlay();  // 隐藏重连进度条
@@ -1267,6 +1283,12 @@
 
       // 停止心跳
       stopHeartbeat();
+
+      // 确保清除连接超时定时器（如果是连接失败触发的 onclose）
+      if (wsConnectionTimeout) {
+        clearTimeout(wsConnectionTimeout);
+        wsConnectionTimeout = null;
+      }
 
       // 不立即清理 RTC，给 WebSocket 重连的机会
       // 如果使用 TURN relay，RTC 连接可能仍然有效
@@ -1420,7 +1442,6 @@
     if (!isController()) return;
     if (!enableMouseChk.checked) return;
 
-    // 鼠标移动事件节流：限制最多 30fps，减少 DataChannel 消息量
     if (action === 'move') {
       const now = Date.now();
       if (now - lastMouseSendTime < MOUSE_THROTTLE_MS) {
@@ -1428,6 +1449,9 @@
       }
       lastMouseSendTime = now;
     }
+
+    // 如果正在连接中，跳过发送
+    if (connecting) return;
 
     if (!dataChannel || dataChannel.readyState !== "open") {
       // 如果 DataChannel 不可用，降级使用 WebSocket
