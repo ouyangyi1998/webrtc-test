@@ -51,9 +51,9 @@
   // Offer 超时重试相关
   let offerTimeoutTimer = null;   // offer 超时定时器
   let offerRetryCount = 0;        // offer 重试次数
-  let offerInProgress = false;    // offer 创建锁，防止并发创建多个 offer
   const OFFER_TIMEOUT = 10000;    // 10 秒未收到 answer 则重试
   const MAX_OFFER_RETRIES = 3;    // 最大重试次数
+  let creatingOffer = false;      // 正在创建 offer 的标志，防止重复调用
 
   // WebSocket 心跳相关
   let heartbeatTimer = null;
@@ -1212,8 +1212,8 @@
             break;
           case "peer-joined":
             // 如果已经有正在进行的 offer，忽略新的 peer-joined，避免竞争
-            if (offerInProgress) {
-              log("已有 offer 正在创建中，忽略 peer-joined");
+            if (creatingOffer) {
+              log("正在创建 offer，忽略 peer-joined");
               break;
             }
             if (pc && pc.signalingState === 'have-local-offer') {
@@ -1329,12 +1329,12 @@
   };
 
   const startMediaAndOffer = async () => {
-    // 防止并发创建多个 offer
-    if (offerInProgress) {
-      log("已有 offer 正在创建中，跳过");
+    // 防止重复调用
+    if (creatingOffer) {
+      log("[startMediaAndOffer] 已在创建 offer，跳过");
       return;
     }
-    offerInProgress = true;
+    creatingOffer = true;
 
     try {
       ensurePeer();
@@ -1358,9 +1358,8 @@
 
       // 启动 offer 超时定时器
       startOfferTimeout();
-    } catch (e) {
-      log(`创建 offer 失败: ${e.message}`);
-      offerInProgress = false;
+    } finally {
+      creatingOffer = false;
     }
   };
 
@@ -1388,14 +1387,12 @@
       if (iceState === 'connected' || iceState === 'completed') {
         log('[Offer] 连接已建立，无需重试');
         offerRetryCount = 0;
-        offerInProgress = false;  // 释放锁
         return;
       }
 
       // 如果信令状态不是 have-local-offer，说明已经收到 answer
       if (signalingState !== 'have-local-offer') {
         log(`[Offer] 信令状态 ${signalingState}，无需重试`);
-        offerInProgress = false;  // 释放锁
         return;
       }
 
@@ -1407,7 +1404,6 @@
       } else {
         log('[Offer] 重试次数已用尽，触发完整重连');
         offerRetryCount = 0;
-        offerInProgress = false;  // 释放锁
         teardownRtc(true);
         scheduleReconnect();
       }
@@ -1428,7 +1424,6 @@
       startOfferTimeout();
     } catch (e) {
       log(`[Offer] 重试失败: ${e.message}`);
-      offerInProgress = false;  // 释放锁
     }
   };
 
@@ -1439,7 +1434,6 @@
       offerTimeoutTimer = null;
     }
     offerRetryCount = 0;
-    offerInProgress = false;  // 重置 offer 创建锁
   };
 
   const handleOffer = async (sdp) => {
