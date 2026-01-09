@@ -104,10 +104,50 @@ class WebRTCManager(
         return videoTrack
     }
 
+    // 用于处理 MediaProjection 回调的 Handler（切换到主线程）
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    
+    // 标记是否正在停止捕获（防止重复调用）
+    @Volatile
+    private var isStopping = false
+
     private fun createScreenCapturer(intent: android.content.Intent): VideoCapturer? {
          return ScreenCapturerAndroid(intent, object : MediaProjection.Callback() {
             override fun onStop() {
-                Log.e(TAG, "User revoked permission to capture the screen.")
+                Log.w(TAG, "MediaProjection stopped by system or user")
+                
+                // 切换到主线程处理，避免并发问题
+                mainHandler.post {
+                    if (isStopping) {
+                        Log.d(TAG, "Already stopping, skip duplicate onStop")
+                        return@post
+                    }
+                    isStopping = true
+                    
+                    try {
+                        // 优雅停止屏幕捕获
+                        Log.i(TAG, "Gracefully stopping screen capture...")
+                        
+                        // 1. 先停止视频轨道
+                        localVideoTrack?.setEnabled(false)
+                        
+                        // 2. 停止捕获器
+                        try {
+                            videoCapturer?.stopCapture()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error stopping video capturer: ${e.message}")
+                        }
+                        
+                        // 3. 通知监听器
+                        listener.onError("MediaProjection stopped")
+                        
+                        Log.i(TAG, "Screen capture stopped gracefully")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in MediaProjection.onStop: ${e.message}", e)
+                    } finally {
+                        isStopping = false
+                    }
+                }
             }
         })
     }
@@ -590,28 +630,79 @@ class WebRTCManager(
 
     /**
      * 释放资源
+     * 注意：释放顺序很重要，错误的顺序可能导致 surfaceflinger 崩溃
      */
     fun release() {
-        closePeerConnection()
-        
-        // 释放屏幕捕获资源
-        try {
-            videoCapturer?.stopCapture()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping video capturer", e)
+        if (isStopping) {
+            Log.w(TAG, "Already releasing, skip duplicate call")
+            return
         }
-        videoCapturer?.dispose()
-        videoCapturer = null
+        isStopping = true
         
-        surfaceTextureHelper?.dispose()
-        surfaceTextureHelper = null
+        Log.i(TAG, "Releasing WebRTC resources...")
         
-        localVideoTrack?.dispose()
-        localVideoTrack = null
-        
-        peerConnectionFactory?.dispose()
-        peerConnectionFactory = null
-        eglBase?.release()
-        eglBase = null
+        try {
+            // 1. 先禁用视频轨道（减少 surfaceflinger 负载）
+            localVideoTrack?.setEnabled(false)
+            
+            // 2. 关闭 PeerConnection（停止发送）
+            closePeerConnection()
+            
+            // 3. 停止屏幕捕获（关键步骤）
+            try {
+                videoCapturer?.stopCapture()
+                Log.d(TAG, "Video capturer stopped")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping video capturer", e)
+            }
+            
+            // 4. 短暂延迟，让系统处理停止请求
+            Thread.sleep(100)
+            
+            // 5. 释放捕获器
+            try {
+                videoCapturer?.dispose()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disposing video capturer", e)
+            }
+            videoCapturer = null
+            
+            // 6. 释放 SurfaceTextureHelper
+            try {
+                surfaceTextureHelper?.dispose()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disposing surfaceTextureHelper", e)
+            }
+            surfaceTextureHelper = null
+            
+            // 7. 释放视频轨道
+            try {
+                localVideoTrack?.dispose()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disposing localVideoTrack", e)
+            }
+            localVideoTrack = null
+            
+            // 8. 释放工厂和 EGL
+            try {
+                peerConnectionFactory?.dispose()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disposing peerConnectionFactory", e)
+            }
+            peerConnectionFactory = null
+            
+            try {
+                eglBase?.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing eglBase", e)
+            }
+            eglBase = null
+            
+            Log.i(TAG, "WebRTC resources released successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during release: ${e.message}", e)
+        } finally {
+            isStopping = false
+        }
     }
 }
