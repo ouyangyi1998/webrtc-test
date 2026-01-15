@@ -107,9 +107,13 @@ class WebRTCManager(
     // 用于处理 MediaProjection 回调的 Handler（切换到主线程）
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     
-    // 标记是否正在停止捕获（防止重复调用）
+    // 标记是否正在处理 onStop 回调（防止重复调用）
     @Volatile
-    private var isStopping = false
+    private var isHandlingOnStop = false
+    
+    // 标记是否正在释放资源（防止重复调用）
+    @Volatile
+    private var isReleasing = false
 
     private fun createScreenCapturer(intent: android.content.Intent): VideoCapturer? {
          return ScreenCapturerAndroid(intent, object : MediaProjection.Callback() {
@@ -118,11 +122,11 @@ class WebRTCManager(
                 
                 // 切换到主线程处理，避免并发问题
                 mainHandler.post {
-                    if (isStopping) {
-                        Log.d(TAG, "Already stopping, skip duplicate onStop")
+                    if (isHandlingOnStop || isReleasing) {
+                        Log.d(TAG, "Already stopping/releasing, skip duplicate onStop")
                         return@post
                     }
-                    isStopping = true
+                    isHandlingOnStop = true
                     
                     try {
                         // 优雅停止屏幕捕获
@@ -145,7 +149,7 @@ class WebRTCManager(
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in MediaProjection.onStop: ${e.message}", e)
                     } finally {
-                        isStopping = false
+                        isHandlingOnStop = false
                     }
                 }
             }
@@ -633,11 +637,11 @@ class WebRTCManager(
      * 注意：释放顺序很重要，错误的顺序可能导致 surfaceflinger 崩溃
      */
     fun release() {
-        if (isStopping) {
+        if (isReleasing) {
             Log.w(TAG, "Already releasing, skip duplicate call")
             return
         }
-        isStopping = true
+        isReleasing = true
         
         Log.i(TAG, "Releasing WebRTC resources...")
         
@@ -702,7 +706,7 @@ class WebRTCManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error during release: ${e.message}", e)
         } finally {
-            isStopping = false
+            isReleasing = false
         }
     }
 }
