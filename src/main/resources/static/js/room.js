@@ -143,7 +143,7 @@
       this.currentResolution = 'full'; // 当前分辨率档位
 
       // 配置参数
-      this.minBitrate = 200000;       // 最低200kbps (更激进)
+      this.minBitrate = 400000;       // 最低400kbps
       this.maxBitrate = 4000000;      // 最高4Mbps
       this.minFps = 5;                // 最低5fps
       this.maxFps = 30;               // 最高30fps
