@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.example.remotecontrol.R
 import com.example.remotecontrol.manager.LogManager
@@ -39,6 +40,9 @@ class ScreenCaptureService : Service() {
         var resultCode: Int = 0
             private set
     }
+    
+    // WakeLock 防止屏幕关闭
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -63,6 +67,9 @@ class ScreenCaptureService : Service() {
                 }
                 
                 LogManager.i("ScreenCaptureService started")
+                
+                // 获取 WakeLock 保持屏幕常亮
+                acquireWakeLock()
             }
             ACTION_STOP -> {
                 stopSelf()
@@ -73,10 +80,49 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        
+        // 释放 WakeLock
+        releaseWakeLock()
+        
         instance = null
         screenCaptureIntent = null
         resultCode = 0
         LogManager.i("ScreenCaptureService destroyed")
+    }
+    
+    /**
+     * 获取 WakeLock 保持屏幕常亮
+     * 防止系统在屏幕捕获期间执行 ColorFade 动画导致崩溃
+     */
+    private fun acquireWakeLock() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "RemoteControl:ScreenCapture"
+            )
+            wakeLock?.acquire()
+            LogManager.i("WakeLock acquired - 屏幕将保持常亮")
+        } catch (e: Exception) {
+            LogManager.e("Failed to acquire WakeLock: ${e.message}")
+        }
+    }
+    
+    /**
+     * 释放 WakeLock
+     */
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    LogManager.i("WakeLock released - 屏幕常亮已解除")
+                }
+            }
+            wakeLock = null
+        } catch (e: Exception) {
+            LogManager.e("Failed to release WakeLock: ${e.message}")
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
