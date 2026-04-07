@@ -1,0 +1,35 @@
+services:
+  # ===== 信令服务器 (Spring Boot) =====
+  signaling:
+    build: .
+    container_name: webrtc-signaling
+    restart: always
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    environment:
+      # STUN/TURN 配置 —— 这些值会注入到 application.yml
+      - APP_STUN_URLS=stun:${PUBLIC_IP}:3478
+      - APP_TURN_URLS=turn:${PUBLIC_IP}:3478?transport=udp,turn:${PUBLIC_IP}:3478?transport=tcp
+      - APP_TURN_USERNAME=${TURN_USERNAME:-admin}
+      - APP_TURN_PASSWORD=${TURN_PASSWORD:-123456}
+    depends_on:
+      - coturn
+    networks:
+      - webrtc-net
+
+  # ===== TURN/STUN 服务器 (coturn) =====
+  coturn:
+    image: coturn/coturn:latest
+    container_name: webrtc-coturn
+    restart: always
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/turnserver.conf:ro
+    command: >
+      -c /etc/turnserver.conf
+      --user=${TURN_USERNAME:-admin}:${TURN_PASSWORD:-123456}
+      --external-ip=${PUBLIC_IP}
+
+networks:
+  webrtc-net:
+    driver: bridge
