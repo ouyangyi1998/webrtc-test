@@ -143,15 +143,15 @@
       this.currentResolution = 'full'; // 当前分辨率档位
 
       // 配置参数
-      this.minBitrate = 400000;       // 最低400kbps
+      this.minBitrate = 600000;       // 最低600kbps
       this.maxBitrate = 4000000;      // 最高4Mbps
       this.minFps = 5;                // 最低5fps
       this.maxFps = 30;               // 最高30fps
 
-      this.adjustCooldown = 3000;     // 3秒冷却 (更快响应)
+      this.adjustCooldown = 8000;     // 8秒冷却 (避免过于频繁调整)
       this.lastAdjustTime = 0;
       this.lastDowngradeTime = 0;
-      this.upgradeCooldown = 15000;   // 降级后15秒内禁止升级
+      this.upgradeCooldown = 10000;   // 降级后10秒内禁止升级
 
       // 状态计数器
       this.consecutiveBadSamples = 0;
@@ -227,18 +227,18 @@
       if (now - this.lastAdjustTime < this.adjustCooldown) return null;
 
       // ===== 三级网络状况判定 =====
-      // 重度拥塞: 丢包 > 10% 或 RTT > 400ms
-      const isCritical = metrics.packetLoss > 0.10 || (metrics.rtt && metrics.rtt > 400);
-      // 中度拥塞: 丢包 > 3% 或 RTT > 150ms
-      const isModerate = metrics.packetLoss > 0.03 || (metrics.rtt && metrics.rtt > 150);
-      // 轻度拥塞: 丢包 > 1.5% 或 RTT > 80ms
-      const isMild = metrics.packetLoss > 0.015 || (metrics.rtt && metrics.rtt > 80);
-      // 良好: 丢包 < 0.5% 且 RTT < 60ms
-      const isGood = metrics.packetLoss < 0.005 && metrics.rtt && metrics.rtt < 60;
+      // 重度拥塞: 丢包 > 15% 或 RTT > 500ms
+      const isCritical = metrics.packetLoss > 0.15 || (metrics.rtt && metrics.rtt > 500);
+      // 中度拥塞: 丢包 > 5% 或 RTT > 200ms
+      const isModerate = metrics.packetLoss > 0.05 || (metrics.rtt && metrics.rtt > 200);
+      // 轻度拥塞: 丢包 > 3% 或 RTT > 120ms
+      const isMild = metrics.packetLoss > 0.03 || (metrics.rtt && metrics.rtt > 120);
+      // 良好: 丢包 < 1% 且 RTT < 80ms
+      const isGood = metrics.packetLoss < 0.01 && metrics.rtt && metrics.rtt < 80;
 
       // ===== 预测性分析 =====
       const rttTrend = this.calculateRttTrend();
-      const isPredictedDegradation = rttTrend > 15 && metrics.rtt > 80; // RTT快速增加
+      const isPredictedDegradation = rttTrend > 25 && metrics.rtt > 120; // RTT快速增加
       const jitterAvg = this.calculateJitterTrend();
       const isHighJitter = jitterAvg > 0.03; // 30ms抖动
 
@@ -247,10 +247,10 @@
 
       // ===== 降级触发逻辑 =====
       if (isCritical) {
-        this.consecutiveBadSamples += 3;
+        this.consecutiveBadSamples += 2;
         degradeLevel = 3;
       } else if (isModerate) {
-        this.consecutiveBadSamples += 2;
+        this.consecutiveBadSamples += 1;
         this.consecutiveModerateSamples++;
         degradeLevel = 2;
       } else if (isMild || isPredictedDegradation) {
@@ -276,39 +276,39 @@
       }
 
       // ===== 分级降级策略 =====
-      if (this.consecutiveBadSamples >= 2) {
+      if (this.consecutiveBadSamples >= 4) {
         this.consecutiveGoodSamples = 0;
         this.consecutiveBadSamples = 0;
         this.lastDowngradeTime = now;
 
         if (degradeLevel === 3) {
-          // 重度：同时降帧率和码率
-          log('[QoS] 重度拥塞，激进降级');
+          // 重度：同时降帧率和码率（温和降级）
+          log('[QoS] 重度拥塞，降级');
           if (this.currentBitrate > this.minBitrate) {
-            this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.5);
+            this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.75);
           }
           if (this.currentFps > this.minFps) {
-            this.currentFps = Math.max(this.minFps, this.currentFps - 10);
+            this.currentFps = Math.max(this.minFps, this.currentFps - 5);
           }
           actionTaken = true;
         } else if (degradeLevel === 2) {
           // 中度：优先降码率
           log('[QoS] 中度拥塞，降低码率');
           if (this.currentBitrate > this.minBitrate) {
-            this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.7);
+            this.currentBitrate = Math.max(this.minBitrate, this.currentBitrate * 0.85);
             actionTaken = true;
           } else if (this.currentFps > this.minFps) {
-            this.currentFps = Math.max(this.minFps, this.currentFps - 5);
+            this.currentFps = Math.max(this.minFps, this.currentFps - 3);
             actionTaken = true;
           }
-        } else if (degradeLevel === 1 || this.consecutiveModerateSamples >= 3) {
+        } else if (degradeLevel === 1 || this.consecutiveModerateSamples >= 4) {
           // 轻度/预测性：优先降帧率（更平滑）
           log('[QoS] 轻度拥塞，降低帧率');
           if (this.currentFps > 10) {
-            this.currentFps = Math.max(10, this.currentFps - 5);
+            this.currentFps = Math.max(10, this.currentFps - 3);
             actionTaken = true;
           } else if (this.currentBitrate > 500000) {
-            this.currentBitrate = Math.max(500000, this.currentBitrate * 0.85);
+            this.currentBitrate = Math.max(500000, this.currentBitrate * 0.9);
             actionTaken = true;
           }
           this.consecutiveModerateSamples = 0;
@@ -316,7 +316,7 @@
       }
 
       // ===== 升级策略 =====
-      if (this.consecutiveGoodSamples >= 6 && (now - this.lastDowngradeTime) > this.upgradeCooldown) {
+      if (this.consecutiveGoodSamples >= 4 && (now - this.lastDowngradeTime) > this.upgradeCooldown) {
         this.consecutiveBadSamples = 0;
         this.consecutiveGoodSamples = 0;
 
