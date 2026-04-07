@@ -19,13 +19,13 @@ class ConfigManager(context: Context) {
         private const val KEY_TURN_PASS = "turn_pass"
         
         // 默认值 - 与 JavaFX Agent 保持一致
-        private const val DEFAULT_SIGNAL_URL = "ws://10.0.2.2:8080/ws"
+        private const val DEFAULT_SIGNAL_URL = "ws://124.221.83.69:8089/ws"
         private const val DEFAULT_ROOM_ID = "demo-room"
         private const val DEFAULT_NICKNAME = "Android"
-        private const val DEFAULT_STUN_URLS = "stun:43.139.50.108:3478"
-        private const val DEFAULT_TURN_URLS = "turn:43.139.50.108:3478?transport=udp,turn:43.139.50.108:3478?transport=tcp"
+        private const val DEFAULT_STUN_URLS = "stun:124.221.83.69:3478"
+        private const val DEFAULT_TURN_URLS = "turn:124.221.83.69:3478?transport=udp,turn:124.221.83.69:3478?transport=tcp"
         private const val DEFAULT_TURN_USER = "admin"
-        private const val DEFAULT_TURN_PASS = "123456"
+        private const val DEFAULT_TURN_PASS = "Centerm1234@#"
     }
 
     
